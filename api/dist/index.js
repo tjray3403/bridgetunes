@@ -5,6 +5,15 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const fastify_1 = __importDefault(require("fastify"));
 const fastify = (0, fastify_1.default)({ logger: true });
+// Root welcome endpoint
+fastify.get('/', async (request, reply) => {
+    return {
+        service: 'bridetunes-api',
+        status: 'online',
+        version: '1.0.0',
+        timestamp: new Date().toISOString()
+    };
+});
 // Health check endpoint for Render
 fastify.get("/health", async (request, reply) => {
     return { status: "healthy", service: "bridetunes-api" };
