@@ -2,6 +2,16 @@ import Fastify from "fastify";
 
 const fastify = Fastify({ logger: true });
 
+// Root welcome endpoint
+fastify.get('/', async (request, reply) => {
+  return { 
+    service: 'bridetunes-api', 
+    status: 'online', 
+    version: '1.0.0',
+    timestamp: new Date().toISOString() 
+  };
+});
+
 // Health check endpoint for Render
 fastify.get("/health", async (request, reply) => {
   return { status: "healthy", service: "bridetunes-api" };
