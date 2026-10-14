@@ -1,0 +1,114 @@
+import type { MusicAdapter, Playlist, Track } from './types.js';
+
+export class AppleMusicAdapter implements MusicAdapter {
+  id = 'apple' as const;
+  private baseUrl = 'https://api.music.apple.com/v1';
+
+  parseUrl(url: string): { playlistId: string } | null {
+    try {
+      const parsed = new URL(url);
+      if (parsed.hostname !== 'music.apple.com') return null;
+      const match = parsed.pathname.match(/\/playlist\/[^\/]+\/([a-zA-Z0-9.-]+)/);
+      return match ? { playlistId: match[1] } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async getPlaylists(userToken: string): Promise<Playlist[]> {
+    const res = await fetch(`${this.baseUrl}/me/library/playlists`, {
+      headers: { 
+        Authorization: `Bearer ${process.env.APPLE_DEVELOPER_TOKEN}`,
+        'Music-User-Token': userToken,
+      },
+    });
+    if (!res.ok) throw new Error(`Apple Music API error: ${res.statusText}`);
+    const data = await res.json();
+
+    return data.data.map((item: any) => ({
+      id: item.id,
+      name: item.attributes.name,
+      description: item.attributes.description?.standard,
+      trackCount: item.attributes.trackCount || 0,
+      imageUrl: item.attributes.artwork?.url?.replace('{w}', '300').replace('{h}', '300'),
+    }));
+  }
+
+  async getPlaylistTracks(_userToken: string, playlistId: string): Promise<Track[]> {
+    const res = await fetch(`${this.baseUrl}/catalog/us/playlists/${playlistId}/tracks`, {
+      headers: { Authorization: `Bearer ${process.env.APPLE_DEVELOPER_TOKEN}` },
+    });
+    if (!res.ok) throw new Error(`Apple Music API error: ${res.statusText}`);
+    const data = await res.json();
+
+    return data.data.map((track: any) => ({
+      id: track.id,
+      title: track.attributes.name,
+      artist: track.attributes.artistName,
+      album: track.attributes.albumName,
+      durationMs: track.attributes.durationInMillis,
+      isrc: track.attributes.isrc,
+    }));
+  }
+
+  async createPlaylist(userToken: string, userId: string, name: string, description?: string): Promise<Playlist> {
+    const res = await fetch(`${this.baseUrl}/me/library/playlists`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.APPLE_DEVELOPER_TOKEN}`,
+        'Music-User-Token': userToken,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        attributes: { name, description: description ? { standard: description } : undefined }
+      }),
+    });
+    if (!res.ok) throw new Error(`Apple Music create playlist error: ${res.statusText}`);
+    const data = await res.json();
+    const item = data.data[0];
+
+    return {
+      id: item.id,
+      name: item.attributes.name,
+      description: description,
+      trackCount: 0,
+    };
+  }
+
+  async addTracksToPlaylist(userToken: string, playlistId: string, trackIdentifiers: string[]): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/me/library/playlists/${playlistId}/tracks`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.APPLE_DEVELOPER_TOKEN}`,
+        'Music-User-Token': userToken,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        data: trackIdentifiers.map(id => ({ id, type: 'songs' }))
+      }),
+    });
+    if (!res.ok) throw new Error(`Apple Music add tracks error: ${res.statusText}`);
+  }
+
+  async searchTrack(userToken: string, track: Track, storefront: string = 'us'): Promise<string | null> {
+    // 1. ISRC Catalog Lookup
+    if (track.isrc) {
+      const isrcRes = await fetch(`${this.baseUrl}/catalog/${storefront}/songs?filter[isrc]=${track.isrc}`, {
+        headers: { Authorization: `Bearer ${process.env.APPLE_DEVELOPER_TOKEN}` },
+      });
+      if (isrcRes.ok) {
+        const data = await isrcRes.json();
+        if (data.data?.length > 0) return data.data[0].id;
+      }
+    }
+
+    // 2. Metadata Catalog Search Fallback
+    const term = encodeURIComponent(`${track.title} ${track.artist}`);
+    const searchRes = await fetch(`${this.baseUrl}/catalog/${storefront}/search?term=${term}&types=songs&limit=1`, {
+      headers: { Authorization: `Bearer ${process.env.APPLE_DEVELOPER_TOKEN}` },
+    });
+    if (!searchRes.ok) return null;
+    const searchData = await searchRes.json();
+    return searchData.results?.songs?.data?.[0]?.id || null;
+  }
+}

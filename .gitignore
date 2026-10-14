@@ -34,6 +34,9 @@ bower_components
 
 # node_modules
 node_modules/
+**/node_modules/
+api/dist/
+packages/adapters/dist/
 
 # TypeScript v8 debug files
 *.tsbuildinfo
@@ -53,6 +56,8 @@ node_modules/
 .env.development.local
 .env.test.local
 .env.production.local
+.env.*.local
+
 
 # Firebase
 .firebase/
