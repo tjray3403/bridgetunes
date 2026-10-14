@@ -1,5 +1,5 @@
-# Bridetunes
-Bridetunes turns a playlist link from one music service into a shareable link ("Smart Link") showing where each song is available on other services, designed to cost close to $0 a month.
+# Bridgetunes
+Bridgetunes turns a playlist link from one music service into a shareable link ("Smart Link") showing where each song is available on other services, designed to cost close to $0 a month.
 
 ## Features
 - Paste a Spotify, Apple Music, or TIDAL playlist link to generate a Smart Link.
