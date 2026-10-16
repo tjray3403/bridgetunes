@@ -7,8 +7,10 @@ const apiClient = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
-export async function submitPlaylist(url: string, service: string) {
-  const { data } = await apiClient.post('/api/playlists', { url, service });
+export async function submitPlaylist(url: string, service: string, spotifyAccessToken?: string) {
+  const { data } = await apiClient.post('/api/playlists', { url, service }, {
+    headers: spotifyAccessToken ? { Authorization: `Bearer ${spotifyAccessToken}` } : undefined,
+  });
   return data as { playlistId: string; status: string };
 }
 

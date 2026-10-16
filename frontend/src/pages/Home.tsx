@@ -1,103 +1,162 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
+import { ArrowDown, ArrowRight, Check, Loader2, Music2, Sparkles } from 'lucide-react';
 import { submitPlaylist } from '../services/api';
-import { Music, ArrowRight, Loader2 } from 'lucide-react';
+import { currentSpotifyAccessToken, spotifyAuthorizationUrl } from '../services/spotifyAuth';
+
+type Service = 'spotify' | 'apple';
 
 export function Home() {
   const [url, setUrl] = useState('');
-  const [service, setService] = useState('spotify');
+  const [service, setService] = useState<Service>('spotify');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [spotifyAuthPrompt, setSpotifyAuthPrompt] = useState(false);
   const navigate = useNavigate();
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
     if (!url.trim()) return;
 
     setLoading(true);
     setError('');
+    setSpotifyAuthPrompt(false);
 
     try {
-      const data = await submitPlaylist(url, service);
-      navigate(`/p/${data.playlistId}`);
-    } catch (err: any) {
-      setError(axiosErrorMessage(err));
+      const result = await submitPlaylist(url, service, service === 'spotify' ? currentSpotifyAccessToken() : undefined);
+      navigate(`/p/${result.playlistId}`);
+    } catch (cause: unknown) {
+      if (service === 'spotify' && typeof cause === 'object' && cause !== null && 'response' in cause) {
+        const response = (cause as { response?: { data?: { authRequired?: boolean } } }).response;
+        if (response?.data?.authRequired) {
+          setSpotifyAuthPrompt(true);
+          return;
+        }
+      }
+      setError(getErrorMessage(cause));
     } finally {
       setLoading(false);
     }
   };
 
+  const connectSpotify = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      sessionStorage.setItem('bridgetunes-pending-playlist', JSON.stringify({ url, service }));
+      window.location.assign(await spotifyAuthorizationUrl());
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : 'Could not start Spotify sign-in.');
+      setLoading(false);
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center p-6">
-      <div className="max-w-xl w-full bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl">
-        <div className="flex items-center space-x-3 mb-6">
-          <div className="p-3 bg-violet-600/20 text-violet-400 rounded-xl">
-            <Music size={28} />
+    <main className="site-shell landing-shell">
+      <div className="ambient ambient-gold" aria-hidden="true" />
+      <div className="ambient ambient-violet" aria-hidden="true" />
+
+      <header className="site-nav page-width">
+        <Link className="brand-lockup" to="/" aria-label="BridgeTunes home">
+          <span className="brand-mark"><Music2 size={17} strokeWidth={2.6} /></span>
+          <span>bridge<span className="brand-light">tunes</span></span>
+        </Link>
+        <span className="nav-note"><span className="live-dot" /> Playlist links, made simple</span>
+      </header>
+
+      <section className="landing-layout page-width">
+        <div className="landing-copy">
+          <div className="eyebrow"><Sparkles size={13} /> YOUR MUSIC, CONNECTED</div>
+          <h1>One playlist.<br /><span>Every service.</span></h1>
+          <p className="hero-copy">See where the songs are available, then share one simple link with everyone.</p>
+
+          <div className="service-legend" aria-label="Supported music services">
+            <span className="service-pill service-pill-spotify"><span className="service-dot" /> Spotify</span>
+            <span className="service-pill service-pill-apple"><span className="service-dot" /> Apple Music</span>
           </div>
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">BridgeTunes</h1>
-            <p className="text-sm text-slate-400">Transfer playlists across music platforms instantly.</p>
-          </div>
+
+          <form className="import-card" onSubmit={handleSubmit}>
+            <div className="card-heading">
+              <div>
+                <span className="card-kicker">GET STARTED</span>
+                <h2>Paste a playlist</h2>
+              </div>
+              <span className="step-badge">01 <ArrowDown size={13} /></span>
+            </div>
+
+            <label className="field-label" htmlFor="source-service">Playlist source</label>
+            <div className="select-wrap">
+              <select id="source-service" value={service} onChange={(event) => setService(event.target.value as Service)} className="field-control">
+                <option value="spotify">Spotify</option>
+                <option value="apple">Apple Music</option>
+              </select>
+              <ArrowDown className="select-icon" size={16} aria-hidden="true" />
+            </div>
+
+            <label className="field-label" htmlFor="playlist-url">Playlist URL</label>
+            <input
+              id="playlist-url"
+              className="field-control url-input"
+              type="url"
+              placeholder={service === 'spotify' ? 'open.spotify.com/playlist/…' : 'music.apple.com/playlist/…'}
+              value={url}
+              onChange={(event) => setUrl(event.target.value)}
+              required
+              autoComplete="url"
+            />
+            <p className="field-help">We only read the playlist details needed to find your tracks.</p>
+
+            {error && <p role="alert" className="notice notice-error">{error}</p>}
+
+            {spotifyAuthPrompt && (
+              <div className="notice notice-auth">
+                <div className="notice-icon"><Music2 size={17} /></div>
+                <div className="notice-content">
+                  <strong>Connect Spotify to continue</strong>
+                  <p>Spotify requires your permission to read this playlist. Use an account that owns it or collaborates on it.</p>
+                  <button type="button" onClick={connectSpotify} disabled={loading} className="button button-auth">
+                    Continue with Spotify <ArrowRight size={16} />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <button type="submit" className="button button-primary import-submit" disabled={loading}>
+              {loading ? <><Loader2 className="spin" size={18} /> Preparing your link…</> : <>Create your smart link <ArrowRight size={18} /></>}
+            </button>
+            <div className="privacy-note"><Check size={13} /> Your playlist stays yours. We never change it.</div>
+          </form>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-              Select Source Service
-            </label>
-            <select
-              value={service}
-              onChange={(e) => setService(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-violet-500 transition-colors"
-            >
-              <option value="spotify">Spotify</option>
-              <option value="apple">Apple Music</option>
-            </select>
+        <div className="landing-visual" aria-label="Example playlist preview">
+          <div className="visual-caption"><span>THE BRIDGETUNES EXPERIENCE</span><span className="caption-line" /></div>
+          <div className="device-frame">
+            <div className="device-button device-button-left" />
+            <div className="device-screen">
+              <div className="device-status"><span>9:41</span><span className="status-icons"><i /><i /><i /></span></div>
+              <div className="device-brand"><span className="mini-mark">bt</span><span>YOUR PLAYLIST</span></div>
+              <div className="cover-art"><span className="cover-orb cover-orb-one" /><span className="cover-orb cover-orb-two" /><span className="cover-title">after<br />hours</span><span className="cover-subtitle">a little softer, a little slower</span></div>
+              <div className="preview-info"><div><h3>Late Night Drive</h3><p>Shared by you · 42 tracks</p></div><span className="preview-play"><ArrowRight size={15} /></span></div>
+              <div className="availability-row"><span className="availability-label">AVAILABLE ON</span><span className="tiny-service tiny-spotify">S</span><span className="tiny-service tiny-apple">A</span><span className="availability-count">2 services</span></div>
+              <div className="preview-track"><span className="track-index">01</span><span className="track-copy"><b>Nightcall</b><small>Kavinsky</small></span><span className="track-duration">4:18</span></div>
+              <div className="preview-track"><span className="track-index">02</span><span className="track-copy"><b>Instant Crush</b><small>Daft Punk, Julian Casablancas</small></span><span className="track-duration">5:37</span></div>
+              <div className="preview-track"><span className="track-index">03</span><span className="track-copy"><b>Sundara</b><small>ME3</small></span><span className="track-duration">3:42</span></div>
+              <div className="phone-footer"><span /> A link that sounds like you</div>
+            </div>
           </div>
+          <div className="visual-note"><span className="note-star">✳</span><span>One easy link.<br /><b>More ways to listen.</b></span></div>
+        </div>
+      </section>
 
-          <div>
-            <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-              Playlist URL
-            </label>
-            <input
-              type="url"
-              placeholder="https://open.spotify.com/playlist/..."
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              required
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white placeholder-slate-600 focus:outline-none focus:border-violet-500 transition-colors"
-            />
-          </div>
-
-          {error && <p className="text-sm text-red-400">{error}</p>}
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-violet-600 hover:bg-violet-500 font-semibold py-3 px-4 rounded-xl transition-all flex items-center justify-center space-x-2 disabled:opacity-50"
-          >
-            {loading ? (
-              <>
-                <Loader2 className="animate-spin" size={20} />
-                <span>Processing Link...</span>
-              </>
-            ) : (
-              <>
-                <span>Generate Smart Link</span>
-                <ArrowRight size={20} />
-              </>
-            )}
-          </button>
-        </form>
-      </div>
-    </div>
+      <footer className="landing-footer page-width"><span>BRIDGETUNES © 2026</span><span>Made for the music you share.</span></footer>
+    </main>
   );
 }
 
-function axiosErrorMessage(error: unknown): string {
+function getErrorMessage(error: unknown): string {
   if (typeof error === 'object' && error !== null && 'response' in error) {
     const response = (error as { response?: { data?: { error?: string } } }).response;
     if (response?.data?.error) return response.data.error;
   }
-  return 'Failed to submit playlist. Please try again.';
+  return 'Could not create the playlist link. Please check the URL and try again.';
 }

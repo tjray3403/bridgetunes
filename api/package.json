@@ -10,9 +10,9 @@
     "start:local": "node --env-file=.env dist/index.js"
   },
   "dependencies": {
+    "@bridgetunes/adapters": "file:../packages/adapters",
     "@upstash/qstash": "^2.7.0",
     "@upstash/redis": "^1.34.0",
-    "@bridgetunes/adapters": "file:../packages/adapters",
     "fastify": "^5.12.7",
     "firebase-admin": "^14.5.0"
   },

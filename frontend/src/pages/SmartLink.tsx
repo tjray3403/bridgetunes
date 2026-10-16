@@ -1,110 +1,173 @@
 import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
+import { AlertCircle, ArrowLeft, Check, CheckCircle2, Loader2, Music2, Sparkles } from 'lucide-react';
 import { getPlaylist } from '../services/api';
-import { CheckCircle2, Loader2, AlertCircle } from 'lucide-react';
+
+type PlaylistTrack = {
+  title?: string;
+  artist?: string;
+  durationMs?: number;
+  availability?: { spotify?: string | null; apple?: string | null };
+};
+
+type PlaylistData = {
+  name?: string;
+  status?: string;
+  sourceService?: string;
+  tracks?: PlaylistTrack[];
+  progress?: { completedChunks?: number; totalChunks?: number };
+  error?: string;
+};
 
 export function SmartLink() {
   const { id } = useParams<{ id: string }>();
-  const [playlist, setPlaylist] = useState<any>(null);
+  const [playlist, setPlaylist] = useState<PlaylistData | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
     if (!id) return;
 
     let isMounted = true;
+    let interval: number | undefined;
     const fetchDetails = async () => {
       try {
-        const data = await getPlaylist(id);
+        const data = await getPlaylist(id) as PlaylistData;
         if (!isMounted) return;
         setPlaylist(data);
-
-        // Stop polling if ready or failed
-        if (data.status === 'ready' || data.status === 'failed') {
-          clearInterval(interval);
+        if ((data.status === 'ready' || data.status === 'failed') && interval !== undefined) {
+          window.clearInterval(interval);
         }
-      } catch (err) {
-        if (isMounted) setError('Could not load playlist details.');
+      } catch {
+        if (isMounted) setError('Could not load this playlist link. It may have expired or the API may be unavailable.');
       }
     };
 
-    fetchDetails();
-    const interval = setInterval(fetchDetails, 3000); // Poll every 3 seconds
-
+    void fetchDetails();
+    interval = window.setInterval(() => void fetchDetails(), 3000);
     return () => {
       isMounted = false;
-      clearInterval(interval);
+      if (interval !== undefined) window.clearInterval(interval);
     };
   }, [id]);
 
   if (error) {
-    return <div className="min-h-screen bg-slate-950 text-red-400 p-8 flex items-center justify-center">{error}</div>;
+    return (
+      <main className="site-shell state-shell">
+        <div className="state-card">
+          <span className="state-icon state-icon-error"><AlertCircle size={22} /></span>
+          <p className="eyebrow">LINK UNAVAILABLE</p>
+          <h1>We couldn’t load this playlist.</h1>
+          <p className="state-copy">{error}</p>
+          <Link className="button button-primary" to="/">Back to BridgeTunes <ArrowLeft size={17} /></Link>
+        </div>
+      </main>
+    );
   }
 
   if (!playlist) {
     return (
-      <div className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center space-y-4">
-        <Loader2 className="animate-spin text-violet-500" size={40} />
-        <p className="text-slate-400">Loading Smart Link...</p>
-      </div>
+      <main className="site-shell state-shell">
+        <div className="state-card">
+          <span className="state-icon state-icon-gold"><Loader2 className="spin" size={22} /></span>
+          <p className="eyebrow">BRIDGETUNES</p>
+          <h1>Opening your playlist…</h1>
+          <p className="state-copy">Getting the music and availability details ready.</p>
+        </div>
+      </main>
     );
   }
 
+  const tracks = playlist.tracks || [];
+  const totalChunks = playlist.progress?.totalChunks || 0;
+  const completedChunks = playlist.progress?.completedChunks || 0;
+  const progressPercent = totalChunks ? Math.min(100, Math.round((completedChunks / totalChunks) * 100)) : 0;
   const isProcessing = playlist.status === 'processing';
-  const progressPercent = playlist.progress?.totalChunks
-    ? Math.round((playlist.progress.completedChunks / playlist.progress.totalChunks) * 100)
-    : 0;
+  const isReady = playlist.status === 'ready';
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white p-6 max-w-4xl mx-auto">
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 mb-8 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-        <div>
-          <span className="text-xs font-semibold uppercase tracking-wider text-violet-400 bg-violet-950/50 px-3 py-1 rounded-full border border-violet-800/50">
-            {playlist.sourceService} Import
-          </span>
-          <h1 className="text-3xl font-bold mt-2">{playlist.name || 'Processing Playlist...'}</h1>
-          <p className="text-slate-400 text-sm mt-1">{playlist.tracks?.length || 0} tracks total</p>
+    <main className="site-shell share-shell">
+      <div className="ambient ambient-gold" aria-hidden="true" />
+      <header className="site-nav page-width share-nav">
+        <Link className="brand-lockup" to="/" aria-label="BridgeTunes home">
+          <span className="brand-mark"><Music2 size={17} strokeWidth={2.6} /></span>
+          <span>bridge<span className="brand-light">tunes</span></span>
+        </Link>
+        <Link className="back-link" to="/"><ArrowLeft size={15} /> Make a link</Link>
+      </header>
+
+      <section className="share-content page-width">
+        <div className="share-hero">
+          <div className="share-cover"><span className="cover-orb cover-orb-one" /><span className="cover-orb cover-orb-two" /><Music2 className="share-cover-note" size={30} /></div>
+          <div className="share-heading">
+            <div className="eyebrow"><Sparkles size={13} /> YOUR SMART LINK</div>
+            <div className="source-badge"><span className={`source-dot source-${playlist.sourceService || 'spotify'}`} />{serviceName(playlist.sourceService)} PLAYLIST</div>
+            <h1>{playlist.name || (isReady ? 'Your playlist' : 'Building your playlist link')}</h1>
+            <p className="share-subtitle">A little more listening, wherever your people are.</p>
+            <div className="share-stats"><span>{tracks.length} tracks</span><span className="stat-divider" /><span>{isReady ? 'Ready to share' : isProcessing ? 'Matching tracks' : 'Import status'}</span></div>
+          </div>
         </div>
 
-        {isProcessing && (
-          <div className="w-full md:w-64 bg-slate-950 p-4 rounded-xl border border-slate-800">
-            <div className="flex justify-between text-xs text-slate-400 mb-2">
-              <span className="flex items-center gap-1.5">
-                <Loader2 className="animate-spin text-violet-400" size={14} /> Matching Songs
-              </span>
-              <span>{progressPercent}%</span>
-            </div>
-            <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
-              <div className="bg-violet-600 h-full transition-all duration-300" style={{ width: `${progressPercent}%` }} />
-            </div>
+        <section className="availability-panel" aria-label="Playlist progress and availability">
+          <div className="availability-panel-heading">
+            <div><span className="card-kicker">LISTENING OPTIONS</span><h2>Find your next listen</h2></div>
+            <span className={`status-chip ${isReady ? 'status-ready' : playlist.status === 'failed' ? 'status-failed' : 'status-working'}`}>
+              {isReady ? <CheckCircle2 size={14} /> : playlist.status === 'failed' ? <AlertCircle size={14} /> : <Loader2 className="spin" size={14} />}
+              {isReady ? 'Ready' : playlist.status === 'failed' ? 'Import failed' : 'In progress'}
+            </span>
           </div>
-        )}
-      </div>
-
-      <div className="space-y-3">
-        <h2 className="text-lg font-semibold text-slate-300">Track Availability</h2>
-        {playlist.status === 'failed' && (
-          <p role="alert" className="rounded-xl border border-red-900 bg-red-950/40 p-4 text-sm text-red-300">
-            {playlist.error || 'Playlist processing failed.'}
-          </p>
-        )}
-        {playlist.tracks?.map((track: any, index: number) => (
-          <div key={index} className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 flex items-center justify-between">
-            <div>
-              <p className="font-medium text-white">{track.title}</p>
-              <p className="text-sm text-slate-400">{track.artist}</p>
-            </div>
-
-            <div className="flex items-center space-x-3">
-              <span className={`text-xs px-2.5 py-1 rounded-lg flex items-center gap-1 ${track.availability?.spotify ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/50' : 'bg-slate-800 text-slate-500'}`}>
-                Spotify {track.availability?.spotify ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
-              </span>
-              <span className={`text-xs px-2.5 py-1 rounded-lg flex items-center gap-1 ${track.availability?.apple ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/50' : 'bg-slate-800 text-slate-500'}`}>
-                Apple Music {track.availability?.apple ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
-              </span>
-            </div>
+          <div className="provider-legend">
+            <span><i className="legend-dot legend-spotify" /> Spotify</span>
+            <span><i className="legend-dot legend-apple" /> Apple Music</span>
+            {isProcessing && <span className="match-progress-text">{progressPercent}% matched</span>}
           </div>
-        ))}
-      </div>
-    </div>
+          {isProcessing && <div className="progress-track"><span style={{ width: `${progressPercent}%` }} /></div>}
+          {playlist.status === 'failed' && <p role="alert" className="notice notice-error share-error">{playlist.error || 'Playlist processing failed. Please try the link again.'}</p>}
+        </section>
+
+        <section className="track-section">
+          <div className="track-section-heading"><div><span className="card-kicker">THE PLAYLIST</span><h2>Track availability</h2></div><span className="track-count">{tracks.length} songs</span></div>
+          {tracks.length === 0 && playlist.status !== 'failed' ? (
+            <div className="empty-tracks"><Loader2 className="spin" size={18} /> Waiting for tracks to arrive…</div>
+          ) : (
+            <div className="track-list">
+              {tracks.map((track, index) => (
+                <article className="track-row" key={`${track.title || 'track'}-${index}`}>
+                  <span className="track-number">{String(index + 1).padStart(2, '0')}</span>
+                  <span className="track-art" aria-hidden="true"><Music2 size={15} /></span>
+                  <div className="track-details"><strong>{track.title || 'Unknown track'}</strong><span>{track.artist || 'Unknown artist'}</span></div>
+                  <div className="track-platforms">
+                    <AvailabilityTag platform="spotify" available={Boolean(track.availability?.spotify)} />
+                    <AvailabilityTag platform="apple" available={Boolean(track.availability?.apple)} />
+                  </div>
+                  {track.durationMs ? <span className="track-duration desktop-duration">{formatDuration(track.durationMs)}</span> : null}
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <footer className="share-footer"><span><span className="brand-mark brand-mark-small"><Music2 size={13} /></span> Shared with BridgeTunes</span><span>One link. More ways to listen.</span></footer>
+      </section>
+    </main>
   );
+}
+
+function AvailabilityTag({ platform, available }: { platform: 'spotify' | 'apple'; available: boolean }) {
+  return (
+    <span className={`availability-tag ${available ? `tag-${platform}-available` : ''}`} aria-label={`${serviceName(platform)} ${available ? 'available' : 'not found'}`}>
+      <i className={`tag-dot tag-dot-${platform}`} />
+      <span className="tag-label">{platform === 'apple' ? 'Apple' : 'Spotify'}</span>
+      {available ? <Check size={12} /> : <span className="tag-dash">—</span>}
+    </span>
+  );
+}
+
+function serviceName(service?: string): string {
+  if (service === 'apple') return 'Apple Music';
+  return 'Spotify';
+}
+
+function formatDuration(milliseconds: number): string {
+  const seconds = Math.floor(milliseconds / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }

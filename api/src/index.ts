@@ -5,6 +5,7 @@ import { workerRoutes } from './routes/worker.js';
 const fastify = Fastify({ logger: true });
 const allowedOrigins = new Set([
   'http://localhost:5173',
+  'http://127.0.0.1:5173',
   ...(process.env.FRONTEND_ORIGINS || '').split(',').map((origin) => origin.trim()).filter(Boolean),
 ]);
 
@@ -25,7 +26,7 @@ fastify.addHook('onRequest', async (request, reply) => {
     reply.header('Access-Control-Allow-Origin', origin);
     reply.header('Vary', 'Origin');
     reply.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    reply.header('Access-Control-Allow-Headers', 'Content-Type, Upstash-Signature');
+    reply.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, Upstash-Signature');
   }
   if (request.method === 'OPTIONS') return reply.code(204).send();
 });

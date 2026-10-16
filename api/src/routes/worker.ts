@@ -1,6 +1,8 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import { Receiver } from '@upstash/qstash';
 import { db } from '../services/firebase.js';
+import { getSpotifyAppToken } from '../services/spotify.js';
+import { publishQStashMessage } from '../services/qstash.js';
 import { SpotifyAdapter, AppleMusicAdapter } from '@bridgetunes/adapters';
 
 const receiver = new Receiver({
@@ -52,9 +54,10 @@ export async function workerRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      // NOTE: In production, system uses a system-level backend token or cached user token for public imports
-      const systemToken = process.env.SYSTEM_MUSIC_TOKEN || ''; 
-      const rawTracks = await adapter.getPlaylistTracks(systemToken, parsed.playlistId);
+      const accessToken = service === 'spotify'
+        ? await getSpotifyAppToken()
+        : process.env.APPLE_DEVELOPER_TOKEN || '';
+      const rawTracks = await adapter.getPlaylistTracks(accessToken, parsed.playlistId);
 
       // Chunk tracks into groups of 25 to respect free-tier CPU/memory constraints
       const chunkSize = 25;
@@ -80,16 +83,11 @@ export async function workerRoutes(fastify: FastifyInstance) {
       if (!qstashToken || !workerBaseUrl) throw new Error('QStash publishing is not configured');
 
       for (let i = 0; i < chunks.length; i++) {
-        const publishResponse = await fetch(`https://qstash.upstash.io/v1/publish/${workerBaseUrl}/api/jobs/match-chunk`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${qstashToken}`,
-            'Content-Type': 'application/json',
-            'Upstash-Deduplication-Id': `match-${playlistId}-${i}`,
-          },
-          body: JSON.stringify({ playlistId, chunkIndex: i, tracks: chunks[i] }),
-        });
-        if (!publishResponse.ok) throw new Error(`QStash rejected chunk ${i} (${publishResponse.status})`);
+        await publishQStashMessage(
+          `${workerBaseUrl}/api/jobs/match-chunk`,
+          { playlistId, chunkIndex: i, tracks: chunks[i] },
+          `match-${playlistId}-${i}`,
+        );
       }
 
       return reply.send({ success: true, chunks: chunks.length });
@@ -114,13 +112,14 @@ export async function workerRoutes(fastify: FastifyInstance) {
     // Process matching for this chunk (ISRC lookup / fuzzy fallback)
     const spotifyAdapter = new SpotifyAdapter();
     const appleAdapter = new AppleMusicAdapter();
-    const systemToken = process.env.SYSTEM_MUSIC_TOKEN || '';
+    const spotifyToken = await getSpotifyAppToken();
+    const appleToken = process.env.APPLE_DEVELOPER_TOKEN || '';
 
     const resolvedTracks = [] as Array<{ position: number; availability: { spotify: string | null; apple: string | null } }>;
     for (const [offset, track] of tracks.entries()) {
       const position = chunkIndex * 25 + offset;
-      const spotifyId = await spotifyAdapter.searchTrack(systemToken, track, 'US').catch(() => null);
-      const appleId = await appleAdapter.searchTrack(systemToken, track, 'us').catch(() => null);
+      const spotifyId = await spotifyAdapter.searchTrack(spotifyToken, track, 'US').catch(() => null);
+      const appleId = appleToken ? await appleAdapter.searchTrack(appleToken, track, 'us').catch(() => null) : null;
       resolvedTracks.push({ position, availability: { spotify: spotifyId, apple: appleId } });
     }
 
