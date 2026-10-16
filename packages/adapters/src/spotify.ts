@@ -1,5 +1,20 @@
 import type { MusicAdapter, Playlist, Track } from './types.js';
 
+type SpotifyTrackItem = {
+  uri: string;
+  type?: string;
+  name: string;
+  artists?: Array<{ name: string }>;
+  album?: { name: string };
+  duration_ms?: number;
+  external_ids?: { isrc?: string };
+};
+
+type SpotifyPlaylistItemsPage = {
+  items?: Array<{ item?: SpotifyTrackItem | null; track?: SpotifyTrackItem | null }>;
+  next?: string | null;
+};
+
 export class SpotifyAdapter implements MusicAdapter {
   id = 'spotify' as const;
   private baseUrl = 'https://api.spotify.com/v1';
@@ -32,24 +47,33 @@ export class SpotifyAdapter implements MusicAdapter {
   }
 
   async getPlaylistTracks(accessToken: string, playlistId: string): Promise<Track[]> {
-    const res = await fetch(`${this.baseUrl}/playlists/${playlistId}/tracks`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!res.ok) throw new Error(`Spotify API error: ${res.statusText}`);
-    const data = await res.json();
+    const tracks: Track[] = [];
+    let nextUrl: string | null = `${this.baseUrl}/playlists/${encodeURIComponent(playlistId)}/items?limit=100`;
 
-    return data.items.map((item: any) => {
-      const track = item.track;
-      if (!track) return null;
-      return {
-        id: track.uri,
-        title: track.name,
-        artist: track.artists.map((a: any) => a.name).join(', '),
-        album: track.album?.name,
-        durationMs: track.duration_ms,
-        isrc: track.external_ids?.isrc,
-      };
-    }).filter(Boolean);
+    while (nextUrl) {
+      const pageUrl: string = nextUrl;
+      const res: Response = await fetch(pageUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (!res.ok) {
+        const error = new Error(`Spotify API error: ${res.statusText}`) as Error & { status: number };
+        error.status = res.status;
+        throw error;
+      }
+      const data = await res.json() as SpotifyPlaylistItemsPage;
+      for (const item of data.items || []) {
+        const track = item.item ?? item.track;
+        if (!track || (track.type && track.type !== 'track')) continue;
+        tracks.push({
+          id: track.uri,
+          title: track.name,
+          artist: (track.artists || []).map((artist: { name: string }) => artist.name).join(', '),
+          album: track.album?.name,
+          durationMs: track.duration_ms,
+          isrc: track.external_ids?.isrc,
+        });
+      }
+      nextUrl = data.next || null;
+    }
+    return tracks;
   }
 
   async createPlaylist(accessToken: string, userId: string, name: string, description?: string): Promise<Playlist> {

@@ -12,7 +12,7 @@ BridgeTunes turns a Spotify or Apple Music playlist link into a shareable page s
 ## Local setup
 
 1. Install Node.js 22 or newer.
-2. Copy `frontend/.env.example` to `frontend/.env.local` and set `VITE_API_URL=http://localhost:8080`.
+2. Copy `frontend/.env.example` to `frontend/.env.local`, set `VITE_API_URL=http://localhost:8080`, and set `VITE_SPOTIFY_CLIENT_ID` from your Spotify app.
 3. Copy `api/.env.example` to `api/.env` and fill in the Firebase Admin, QStash, Spotify, and Apple Music values.
 4. Build the adapter package, install the API dependencies, and start the API (run the steps in their respective folders):
 
@@ -26,13 +26,15 @@ BridgeTunes turns a Spotify or Apple Music playlist link into a shareable page s
    npm run start:local
    ```
 
-5. In another terminal, install and run the frontend:
+5. In another terminal, install and run the frontend bound to the loopback address Spotify accepts:
 
    ```powershell
    cd frontend
    npm install
-   npm run dev
+   npm run dev -- --host 127.0.0.1
    ```
+
+   Open the local site at `http://127.0.0.1:5173` so the PKCE verifier remains available when Spotify redirects back.
 
 ## Deployment setup
 
@@ -41,25 +43,30 @@ BridgeTunes turns a Spotify or Apple Music playlist link into a shareable page s
 - Set the service root directory to the repository root.
 - Build command: `cd packages/adapters && npm install && npm run build && cd ../../api && npm install --install-links && npm run build`
 - Start command: `cd api && npm start`
-- Add the variables from `api/.env.example` in the Render environment settings. Set `RENDER_EXTERNAL_URL` to the public URL Render assigns to this service. Set `FRONTEND_ORIGINS` to the Firebase Hosting domains for this project.
+- Add the variables from `api/.env.example` in the Render environment settings. Set `RENDER_EXTERNAL_URL` to the public URL Render assigns to this service. Set `FRONTEND_ORIGINS` to the Firebase Hosting domains for this project. Add `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` from the Spotify Developer Dashboard.
 - The API publishes the fetch job to QStash, which calls `/api/jobs/fetch` on this Render service. QStash then calls the matching worker route for each chunk.
 
 ### Firebase Hosting frontend
 
 - Keep the Firebase project set in `frontend/.firebaserc`.
-- Set `VITE_API_URL` to the Render API URL in the environment used for the production build.
+- Set `VITE_API_URL` to the Render API URL, `VITE_SPOTIFY_CLIENT_ID` to the Spotify Client ID, and `VITE_SPOTIFY_REDIRECT_URI` to `https://bridgetunes-fccff.web.app/spotify/callback` in the environment used for the production build.
+- Register `http://127.0.0.1:5173/spotify/callback` and `https://bridgetunes-fccff.web.app/spotify/callback` as Spotify app Redirect URIs. The value used by the frontend build must exactly match its registered URI.
 - From the `frontend` directory, run `npm install`, `npm run build`, then `npx firebase-tools deploy --only hosting`.
 - Hosting serves the generated `dist` directory; do not edit or commit its generated contents.
 
 ## Required runtime variables
 
 - `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY` for Firestore access.
-- `QSTASH_TOKEN`, `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY` for publishing and verifying queued jobs.
+- `QSTASH_URL`, `QSTASH_TOKEN`, `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY` for publishing and verifying queued jobs. Use the QStash region URL shown in Upstash Quickstart (EU defaults to `https://qstash.upstash.io`; US uses its regional URL).
 - `RENDER_EXTERNAL_URL` for QStash callbacks.
 - `FRONTEND_ORIGINS` for local and Firebase Hosting CORS access.
-- `SYSTEM_MUSIC_TOKEN` for current Spotify playlist reads and searches.
+- `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` on Render for public Spotify playlist imports and catalog searches. The API retrieves and caches its short-lived app token.
+- `VITE_SPOTIFY_CLIENT_ID` in the frontend build environment for user OAuth with Authorization Code + PKCE. This ID is public; never put the Client Secret in frontend variables.
+- `VITE_SPOTIFY_REDIRECT_URI` in the frontend build environment; use the registered loopback URI locally and Firebase callback in production.
 - `APPLE_DEVELOPER_TOKEN` for Apple Music catalog reads and searches.
 - `VITE_API_URL` in the frontend build environment for the Render API base URL. This is public browser configuration, not a secret.
 - `PORT` is optional; Render supplies it, and local development defaults to `8080`.
+
+Public Spotify playlists use the API's app token. If Spotify requires user access, BridgeTunes asks the user to sign in and retries with a short-lived user token. The token stays in the browser session and is not sent to QStash or stored in Firestore. The resulting BridgeTunes share page contains track metadata, including when the original Spotify playlist was private.
 
 Keep real `.env` files and private keys out of Git. The root `.gitignore` already ignores `.env` files.
