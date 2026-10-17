@@ -54,7 +54,8 @@ export class SpotifyAdapter implements MusicAdapter {
       const pageUrl: string = nextUrl;
       const res: Response = await fetch(pageUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
       if (!res.ok) {
-        const error = new Error(`Spotify API error: ${res.statusText}`) as Error & { status: number };
+        const details = await res.text();
+        const error = new Error(`Spotify API error (${res.status}): ${details || res.statusText}`) as Error & { status: number };
         error.status = res.status;
         throw error;
       }
