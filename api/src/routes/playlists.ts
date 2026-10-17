@@ -143,6 +143,9 @@ export async function playlistRoutes(fastify: FastifyInstance) {
         const status = (error as Error & { status?: number }).status;
         if (status === 401 || (!userToken && (status === 403 || status === 404))) return reply.status(401).send({ authRequired: true });
         request.log.error(error, 'Failed to reread Spotify playlist');
+        if (status === 403) {
+          return reply.status(403).send({ error: 'Spotify denied access to this playlist. Reconnect with an account that can read it and approve private playlist access.' });
+        }
         return reply.status(status === 403 ? 403 : 502).send({ error: 'Could not reread this Spotify playlist.' });
       }
       if (updatedTracks.length === 0) return reply.status(422).send({ error: 'No tracks were found in this Spotify playlist.' });

@@ -24,7 +24,7 @@ export function Home() {
     setSpotifyAuthPrompt(false);
 
     try {
-      const result = await submitPlaylist(url, service, service === 'spotify' ? currentSpotifyAccessToken() : undefined, expiresInDays);
+      const result = await submitPlaylist(url, service, service === 'spotify' ? currentSpotifyAccessToken(['playlist-read-private']) : undefined, expiresInDays);
       navigate(`/p/${result.playlistId}`);
     } catch (cause: unknown) {
       if (service === 'spotify' && typeof cause === 'object' && cause !== null && 'response' in cause) {
