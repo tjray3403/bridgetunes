@@ -222,6 +222,7 @@ export async function playlistRoutes(fastify: FastifyInstance) {
     }
 
     let spotifyTracks: Track[] | undefined;
+    let appleTracks: Track[] | undefined;
     if (service === 'spotify') {
       const adapter = new SpotifyAdapter();
       const parsed = adapter.parseUrl(cleanUrl);
@@ -250,6 +251,24 @@ export async function playlistRoutes(fastify: FastifyInstance) {
       }
     }
 
+    if (service === 'apple') {
+      const adapter = new AppleMusicAdapter();
+      const parsed = adapter.parseUrl(cleanUrl);
+      if (!parsed) return reply.status(400).send({ error: 'Invalid Apple Music playlist URL' });
+      if (!process.env.APPLE_DEVELOPER_TOKEN) {
+        return reply.status(503).send({ error: 'Apple Music is not configured on the API.' });
+      }
+      try {
+        appleTracks = await adapter.getPlaylistTracks(process.env.APPLE_DEVELOPER_TOKEN, parsed.playlistId);
+      } catch (error) {
+        request.log.error(error, 'Failed to read Apple Music playlist');
+        return reply.status(502).send({ error: 'Could not read this Apple Music playlist.' });
+      }
+      if (appleTracks.length === 0) {
+        return reply.status(422).send({ error: 'No tracks were found in this Apple Music playlist.' });
+      }
+    }
+
     try {
       await playlistRef.create({
         id: playlistId,
@@ -271,18 +290,9 @@ export async function playlistRoutes(fastify: FastifyInstance) {
     await sourceRef.set({ playlistId, sourceKey, updatedAt: new Date().toISOString() });
 
     try {
-      if (spotifyTracks) {
-        await queueMatchingTracks(playlistId, spotifyTracks);
-      } else {
-        const qstashToken = process.env.QSTASH_TOKEN;
-        const workerBaseUrl = process.env.RENDER_EXTERNAL_URL;
-        if (!qstashToken || !workerBaseUrl) throw new Error('Background job service is not configured');
-        await publishQStashMessage(
-          `${workerBaseUrl}/api/jobs/fetch`,
-          { playlistId, cleanUrl, service },
-          `fetch-${playlistId}`,
-        );
-      }
+      const sourceTracks = spotifyTracks || appleTracks;
+      if (!sourceTracks) throw new Error('Playlist tracks were not loaded');
+      await queueMatchingTracks(playlistId, sourceTracks);
     } catch (error) {
       await playlistRef.update({ status: 'failed', error: 'Could not queue playlist processing' });
       request.log.error(error, 'Failed to enqueue playlist processing');
