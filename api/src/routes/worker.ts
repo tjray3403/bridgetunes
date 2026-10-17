@@ -58,6 +58,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
         ? await getSpotifyAppToken()
         : process.env.APPLE_DEVELOPER_TOKEN || '';
       const rawTracks = await adapter.getPlaylistTracks(accessToken, parsed.playlistId);
+      const sourcePlaylistName = await adapter.getPlaylistName(accessToken, parsed.playlistId).catch(() => null);
 
       // Chunk tracks into groups of 25 to respect free-tier CPU/memory constraints
       const chunkSize = 25;
@@ -68,6 +69,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
 
       // Update total chunks in Firestore
       await db.collection('playlists').doc(playlistId).update({
+        name: sourcePlaylistName || 'Your playlist',
         'progress.totalChunks': chunks.length,
         tracks: rawTracks.map((t, idx) => ({ ...t, position: idx, availability: {} })),
       });

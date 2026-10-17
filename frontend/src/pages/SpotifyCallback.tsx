@@ -6,7 +6,7 @@ import { createSpotifyPlaylist, type SpotifyCreationProgress } from '../services
 import { ArrowLeft, CheckCircle2, Loader2, Music2 } from 'lucide-react';
 
 type PendingPlaylist =
-  | { mode?: 'import'; url: string; service: string; expiresInDays?: number }
+  | { mode?: 'import'; url: string; service: string; playlistName?: string; expiresInHours?: number; expiresInDays?: number }
   | { mode: 'create'; name: string; trackUris: string[] };
 
 export function SpotifyCallback() {
@@ -40,7 +40,8 @@ export function SpotifyCallback() {
         setCreatedPlaylistUrl(spotifyUrl);
         return;
       }
-      const result = await submitPlaylist(pending.url, pending.service, accessToken, pending.expiresInDays ?? 1);
+      const expirationHours = pending.expiresInHours ?? (pending.expiresInDays ?? 1) * 24;
+      const result = await submitPlaylist(pending.url, pending.service, accessToken, expirationHours, pending.playlistName);
       sessionStorage.removeItem('bridgetunes-pending-playlist');
       navigate(`/p/${result.playlistId}`, { replace: true });
     };

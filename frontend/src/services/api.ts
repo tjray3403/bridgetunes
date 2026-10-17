@@ -18,9 +18,9 @@ function ownerKeyForPlaylist(url: string): string {
   return ownerKey;
 }
 
-export async function submitPlaylist(url: string, service: string, spotifyAccessToken?: string, expiresInDays = 1) {
+export async function submitPlaylist(url: string, service: string, spotifyAccessToken?: string, expiresInHours = 24, playlistName?: string) {
   const ownerKey = ownerKeyForPlaylist(url);
-  const { data } = await apiClient.post('/api/playlists', { url, service, expiresInDays }, {
+  const { data } = await apiClient.post('/api/playlists', { url, service, expiresInHours, playlistName }, {
     headers: {
       'X-Playlist-Owner-Key': ownerKey,
       ...(spotifyAccessToken ? { Authorization: `Bearer ${spotifyAccessToken}` } : {}),

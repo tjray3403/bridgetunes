@@ -34,6 +34,15 @@ export class AppleMusicAdapter implements MusicAdapter {
     }));
   }
 
+  async getPlaylistName(_userToken: string, playlistId: string): Promise<string | null> {
+    const res = await fetch(`${this.baseUrl}/catalog/us/playlists/${encodeURIComponent(playlistId)}`, {
+      headers: { Authorization: `Bearer ${process.env.APPLE_DEVELOPER_TOKEN}` },
+    });
+    if (!res.ok) throw new Error(`Apple Music API error: ${res.statusText}`);
+    const data = await res.json() as { data?: Array<{ attributes?: { name?: string } }> };
+    return data.data?.[0]?.attributes?.name || null;
+  }
+
   async getPlaylistTracks(_userToken: string, playlistId: string): Promise<Track[]> {
     const res = await fetch(`${this.baseUrl}/catalog/us/playlists/${playlistId}/tracks`, {
       headers: { Authorization: `Bearer ${process.env.APPLE_DEVELOPER_TOKEN}` },

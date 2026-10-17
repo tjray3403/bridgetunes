@@ -53,13 +53,19 @@ export async function playlistRoutes(fastify: FastifyInstance) {
     return reply.send({ developerToken });
   });
 
-  fastify.post('/api/playlists', async (request: FastifyRequest<{ Body: { url: string; service: string; expiresInDays?: number } }>, reply) => {
-    const { url, service, expiresInDays = 1 } = request.body || {};
+  fastify.post('/api/playlists', async (request: FastifyRequest<{ Body: { url: string; service: string; expiresInHours?: number; expiresInDays?: number; playlistName?: string } }>, reply) => {
+    const { url, service, playlistName: requestedPlaylistName } = request.body || {};
+    const expiresInHours = request.body?.expiresInHours
+      ?? (request.body?.expiresInDays !== undefined ? request.body.expiresInDays * 24 : 24);
+    if (requestedPlaylistName !== undefined && (typeof requestedPlaylistName !== 'string' || requestedPlaylistName.trim().length > 100)) {
+      return reply.status(400).send({ error: 'Playlist name must be 100 characters or fewer.' });
+    }
+    const nameOverride = typeof requestedPlaylistName === 'string' ? requestedPlaylistName.trim() : '';
     if (typeof url !== 'string' || !url.trim() || !['spotify', 'apple'].includes(service)) {
       return reply.status(400).send({ error: 'Missing url or service' });
     }
-    if (!Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > 30) {
-      return reply.status(400).send({ error: 'Link duration must be between 1 and 30 days.' });
+    if (!Number.isInteger(expiresInHours) || expiresInHours < 1 || expiresInHours > 720) {
+      return reply.status(400).send({ error: 'Link duration must be between 1 and 720 hours.' });
     }
 
     const cleanUrl = url.trim();
@@ -143,6 +149,7 @@ export async function playlistRoutes(fastify: FastifyInstance) {
       }
 
       let updatedTracks: Track[];
+      let updatedPlaylistName = nameOverride || existingData.name || 'Your playlist';
       try {
         const readToken = userToken || await getSpotifyAppToken();
         updatedTracks = await adapter.getPlaylistTracks(readToken, parsed.playlistId);
@@ -155,16 +162,25 @@ export async function playlistRoutes(fastify: FastifyInstance) {
         }
         return reply.status(status === 403 ? 403 : 502).send({ error: 'Could not reread this Spotify playlist.' });
       }
+      if (!nameOverride) {
+        try {
+          updatedPlaylistName = await adapter.getPlaylistName(userToken || await getSpotifyAppToken(), parsed.playlistId)
+            || existingData.name || 'Your playlist';
+        } catch (error) {
+          request.log.warn(error, 'Could not read Spotify playlist name; keeping the existing name');
+        }
+      }
       if (updatedTracks.length === 0) return reply.status(422).send({ error: 'No tracks were found in this Spotify playlist.' });
 
       try {
         await queueMatchingTracks(playlistId, updatedTracks);
         await playlistRef.update({
           error: null,
+          name: updatedPlaylistName,
           ownerKeyHash: hashOwnerKey(ownerKey).toString('hex'),
           updatedAt: new Date().toISOString(),
-          expiresAt: new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString(),
-          expiresInDays,
+          expiresAt: new Date(Date.now() + expiresInHours * 60 * 60 * 1000).toISOString(),
+          expiresInHours,
         });
       } catch (error) {
         await playlistRef.update({ status: 'failed', error: 'Could not queue playlist replacement' });
@@ -184,11 +200,20 @@ export async function playlistRoutes(fastify: FastifyInstance) {
       if (!developerToken) return reply.status(503).send({ error: 'Apple Music is not configured on the API.' });
 
       let updatedTracks: Track[];
+      let updatedPlaylistName = nameOverride || existingData.name || 'Your playlist';
       try {
         updatedTracks = await adapter.getPlaylistTracks(developerToken, parsed.playlistId);
       } catch (error) {
         request.log.error(error, 'Failed to reread Apple Music playlist');
         return reply.status(502).send({ error: 'Could not reread this Apple Music playlist.' });
+      }
+      if (!nameOverride) {
+        try {
+          updatedPlaylistName = await adapter.getPlaylistName(developerToken, parsed.playlistId)
+            || existingData.name || 'Your playlist';
+        } catch (error) {
+          request.log.warn(error, 'Could not read Apple Music playlist name; keeping the existing name');
+        }
       }
       if (updatedTracks.length === 0) return reply.status(422).send({ error: 'No tracks were found in this Apple Music playlist.' });
 
@@ -196,10 +221,11 @@ export async function playlistRoutes(fastify: FastifyInstance) {
         await queueMatchingTracks(playlistId, updatedTracks);
         await playlistRef.update({
           error: null,
+          name: updatedPlaylistName,
           ownerKeyHash: hashOwnerKey(ownerKey).toString('hex'),
           updatedAt: new Date().toISOString(),
-          expiresAt: new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString(),
-          expiresInDays,
+          expiresAt: new Date(Date.now() + expiresInHours * 60 * 60 * 1000).toISOString(),
+          expiresInHours,
         });
       } catch (error) {
         await playlistRef.update({ status: 'failed', error: 'Could not queue playlist replacement' });
@@ -223,6 +249,7 @@ export async function playlistRoutes(fastify: FastifyInstance) {
 
     let spotifyTracks: Track[] | undefined;
     let appleTracks: Track[] | undefined;
+    let sourcePlaylistName = nameOverride || '';
     if (service === 'spotify') {
       const adapter = new SpotifyAdapter();
       const parsed = adapter.parseUrl(cleanUrl);
@@ -230,9 +257,10 @@ export async function playlistRoutes(fastify: FastifyInstance) {
 
       const authorization = request.headers.authorization;
       const userToken = authorization?.startsWith('Bearer ') ? authorization.slice(7) : undefined;
+      let spotifyAccessToken: string;
       try {
-        const accessToken = userToken || await getSpotifyAppToken();
-        spotifyTracks = await adapter.getPlaylistTracks(accessToken, parsed.playlistId);
+        spotifyAccessToken = userToken || await getSpotifyAppToken();
+        spotifyTracks = await adapter.getPlaylistTracks(spotifyAccessToken, parsed.playlistId);
       } catch (error) {
         const status = (error as Error & { status?: number }).status;
         if (!userToken && (status === 401 || status === 403 || status === 404)) {
@@ -248,6 +276,13 @@ export async function playlistRoutes(fastify: FastifyInstance) {
 
       if (spotifyTracks.length === 0) {
         return reply.status(422).send({ error: 'No tracks were found in this Spotify playlist.' });
+      }
+      if (!sourcePlaylistName) {
+        try {
+          sourcePlaylistName = await adapter.getPlaylistName(spotifyAccessToken, parsed.playlistId) || '';
+        } catch (error) {
+          request.log.warn(error, 'Could not read Spotify playlist name; using the fallback name');
+        }
       }
     }
 
@@ -267,6 +302,13 @@ export async function playlistRoutes(fastify: FastifyInstance) {
       if (appleTracks.length === 0) {
         return reply.status(422).send({ error: 'No tracks were found in this Apple Music playlist.' });
       }
+      if (!sourcePlaylistName) {
+        try {
+          sourcePlaylistName = await adapter.getPlaylistName(process.env.APPLE_DEVELOPER_TOKEN, parsed.playlistId) || '';
+        } catch (error) {
+          request.log.warn(error, 'Could not read Apple Music playlist name; using the fallback name');
+        }
+      }
     }
 
     try {
@@ -275,11 +317,12 @@ export async function playlistRoutes(fastify: FastifyInstance) {
         ownerKeyHash: hashOwnerKey(ownerKey).toString('hex'),
         sourceUrl: cleanUrl,
         sourceService: service,
+        name: sourcePlaylistName || 'Your playlist',
         status: 'processing',
         progress: { completedChunks: 0, totalChunks: 0 },
         createdAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString(),
-        expiresInDays,
+        expiresAt: new Date(Date.now() + expiresInHours * 60 * 60 * 1000).toISOString(),
+        expiresInHours,
         tracks: [],
       });
     } catch (error) {
