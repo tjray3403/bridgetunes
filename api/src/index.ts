@@ -26,7 +26,7 @@ fastify.addHook('onRequest', async (request, reply) => {
     reply.header('Access-Control-Allow-Origin', origin);
     reply.header('Vary', 'Origin');
     reply.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    reply.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, Upstash-Signature');
+    reply.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, Upstash-Signature, X-Playlist-Owner-Key');
   }
   if (request.method === 'OPTIONS') return reply.code(204).send();
 });

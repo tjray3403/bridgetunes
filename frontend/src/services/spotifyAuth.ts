@@ -2,7 +2,7 @@ const tokenKey = 'bridgetunes-spotify-access-token';
 const verifierKey = 'bridgetunes-spotify-code-verifier';
 const stateKey = 'bridgetunes-spotify-oauth-state';
 
-type SessionToken = { accessToken: string; expiresAt: number };
+type SessionToken = { accessToken: string; expiresAt: number; scopes?: string[] };
 
 function clientId(): string {
   const value = import.meta.env.VITE_SPOTIFY_CLIENT_ID;
@@ -37,7 +37,7 @@ export async function spotifyAuthorizationUrl(): Promise<string> {
     client_id: clientId(),
     response_type: 'code',
     redirect_uri: spotifyRedirectUri(),
-    scope: 'playlist-read-private playlist-read-collaborative',
+    scope: 'playlist-read-private playlist-read-collaborative user-read-private playlist-modify-private playlist-modify-public',
     state,
     code_challenge_method: 'S256',
     code_challenge: challenge,
@@ -67,18 +67,22 @@ export async function completeSpotifyAuthorization(code: string, returnedState: 
   });
   if (!response.ok) throw new Error('Spotify could not complete sign-in. Please try again.');
 
-  const data = await response.json() as { access_token: string; expires_in: number };
-  const token: SessionToken = { accessToken: data.access_token, expiresAt: Date.now() + data.expires_in * 1000 };
+  const data = await response.json() as { access_token: string; expires_in: number; scope?: string };
+  const token: SessionToken = {
+    accessToken: data.access_token,
+    expiresAt: Date.now() + data.expires_in * 1000,
+    scopes: data.scope?.split(' '),
+  };
   sessionStorage.setItem(tokenKey, JSON.stringify(token));
   return token.accessToken;
 }
 
-export function currentSpotifyAccessToken(): string | undefined {
+export function currentSpotifyAccessToken(requiredScopes: string[] = []): string | undefined {
   const stored = sessionStorage.getItem(tokenKey);
   if (!stored) return undefined;
   try {
     const token = JSON.parse(stored) as SessionToken;
-    if (!token.accessToken || token.expiresAt <= Date.now() + 30_000) {
+    if (!token.accessToken || token.expiresAt <= Date.now() + 30_000 || requiredScopes.some((scope) => !token.scopes?.includes(scope))) {
       sessionStorage.removeItem(tokenKey);
       return undefined;
     }

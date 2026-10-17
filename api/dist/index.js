@@ -1,10 +1,34 @@
-"use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", { value: true });
-const fastify_1 = __importDefault(require("fastify"));
-const fastify = (0, fastify_1.default)({ logger: true });
+import Fastify from "fastify";
+import { playlistRoutes } from './routes/playlists.js';
+import { workerRoutes } from './routes/worker.js';
+const fastify = Fastify({ logger: true });
+const allowedOrigins = new Set([
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    ...(process.env.FRONTEND_ORIGINS || '').split(',').map((origin) => origin.trim()).filter(Boolean),
+]);
+fastify.removeContentTypeParser('application/json');
+fastify.addContentTypeParser('application/json', { parseAs: 'string' }, (request, body, done) => {
+    const rawBody = typeof body === 'string' ? body : body.toString('utf8');
+    request.rawBody = rawBody;
+    try {
+        done(null, JSON.parse(rawBody));
+    }
+    catch (error) {
+        done(error, undefined);
+    }
+});
+fastify.addHook('onRequest', async (request, reply) => {
+    const origin = request.headers.origin;
+    if (origin && allowedOrigins.has(origin)) {
+        reply.header('Access-Control-Allow-Origin', origin);
+        reply.header('Vary', 'Origin');
+        reply.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        reply.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, Upstash-Signature, X-Playlist-Owner-Key');
+    }
+    if (request.method === 'OPTIONS')
+        return reply.code(204).send();
+});
 // Root welcome endpoint
 fastify.get('/', async (request, reply) => {
     return {
@@ -20,6 +44,8 @@ fastify.get("/health", async (request, reply) => {
 });
 const start = async () => {
     try {
+        await fastify.register(playlistRoutes);
+        await fastify.register(workerRoutes);
         const port = process.env.PORT ? parseInt(process.env.PORT) : 8080;
         await fastify.listen({ port, host: "0.0.0.0" });
         console.log(`Server listening on port ${port}`);

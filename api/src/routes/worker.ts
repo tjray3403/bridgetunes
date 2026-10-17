@@ -98,14 +98,15 @@ export async function workerRoutes(fastify: FastifyInstance) {
   });
 
   // Worker 2: Match chunk tracks against target platforms
-  fastify.post('/api/jobs/match-chunk', async (request: FastifyRequest<{ Body: { playlistId: string; chunkIndex: number; tracks: any[] } }>, reply) => {
-    const { playlistId, chunkIndex, tracks } = request.body;
+  fastify.post('/api/jobs/match-chunk', async (request: FastifyRequest<{ Body: { playlistId: string; chunkIndex: number; runId?: string; tracks: any[] } }>, reply) => {
+    const { playlistId, chunkIndex, runId, tracks } = request.body;
 
     const playlistRef = db.collection('playlists').doc(playlistId);
     const doc = await playlistRef.get();
     if (!doc.exists) return reply.send({ success: false });
 
     const playlistData = doc.data()!;
+    if (runId && playlistData.processingRunId !== runId) return reply.send({ success: true, stale: true });
     const completedChunkIndexes: number[] = playlistData.completedChunkIndexes || [];
     if (completedChunkIndexes.includes(chunkIndex)) return reply.send({ success: true, duplicate: true });
 
@@ -114,11 +115,16 @@ export async function workerRoutes(fastify: FastifyInstance) {
     const appleAdapter = new AppleMusicAdapter();
     const spotifyToken = await getSpotifyAppToken();
     const appleToken = process.env.APPLE_DEVELOPER_TOKEN || '';
+    const sourceIsSpotify = playlistData.sourceService === 'spotify';
 
     const resolvedTracks = [] as Array<{ position: number; availability: { spotify: string | null; apple: string | null } }>;
     for (const [offset, track] of tracks.entries()) {
       const position = chunkIndex * 25 + offset;
-      const spotifyId = await spotifyAdapter.searchTrack(spotifyToken, track, 'US').catch(() => null);
+      // Spotify-sourced tracks already carry their canonical Spotify URI; searching
+      // them again can fail or return a different recording unnecessarily.
+      const spotifyId = sourceIsSpotify && typeof track.id === 'string' && track.id.startsWith('spotify:track:')
+        ? track.id
+        : await spotifyAdapter.searchTrack(spotifyToken, track, 'US').catch(() => null);
       const appleId = appleToken ? await appleAdapter.searchTrack(appleToken, track, 'us').catch(() => null) : null;
       resolvedTracks.push({ position, availability: { spotify: spotifyId, apple: appleId } });
     }
@@ -126,6 +132,9 @@ export async function workerRoutes(fastify: FastifyInstance) {
     const result = await db.runTransaction(async (transaction) => {
       const latestDoc = await transaction.get(playlistRef);
       const latest = latestDoc.data()!;
+      if (runId && latest.processingRunId !== runId) {
+        return { completedChunks: latest.progress?.completedChunks || 0, stale: true };
+      }
       const completedIndexes: number[] = latest.completedChunkIndexes || [];
       if (completedIndexes.includes(chunkIndex)) {
         return { completedChunks: latest.progress?.completedChunks || 0, duplicate: true };
@@ -142,7 +151,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
         'progress.completedChunks': completedChunks,
         status: completedChunks >= totalChunks ? 'ready' : 'processing',
       });
-      return { completedChunks, duplicate: false };
+      return { completedChunks, duplicate: false, stale: false };
     });
 
     return reply.send({ success: true, ...result });

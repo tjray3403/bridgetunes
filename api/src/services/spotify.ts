@@ -22,3 +22,26 @@ export async function getSpotifyAppToken(): Promise<string> {
   cachedToken = { value: data.access_token, expiresAt: Date.now() + data.expires_in * 1000 };
   return cachedToken.value;
 }
+
+async function spotifyJson<T>(url: string, accessToken: string): Promise<T> {
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!response.ok) {
+    const error = new Error(`Spotify API request failed (${response.status})`) as Error & { status: number };
+    error.status = response.status;
+    throw error;
+  }
+  return response.json() as Promise<T>;
+}
+
+export async function getSpotifyUserId(accessToken: string): Promise<string> {
+  const profile = await spotifyJson<{ id: string }>('https://api.spotify.com/v1/me', accessToken);
+  return profile.id;
+}
+
+export async function getSpotifyPlaylistOwnerId(accessToken: string, playlistId: string): Promise<string> {
+  const url = new URL(`https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}`);
+  url.searchParams.set('fields', 'owner(id)');
+  const playlist = await spotifyJson<{ owner?: { id?: string } }>(url.toString(), accessToken);
+  if (!playlist.owner?.id) throw new Error('Spotify did not return the playlist owner.');
+  return playlist.owner.id;
+}
