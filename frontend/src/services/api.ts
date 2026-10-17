@@ -18,6 +18,10 @@ function ownerKeyForPlaylist(url: string): string {
   return ownerKey;
 }
 
+export function hasPlaylistOwnerKey(url: string): boolean {
+  return Boolean(localStorage.getItem(`bridgetunes-owner-key:${url.trim()}`));
+}
+
 export async function submitPlaylist(url: string, service: string, spotifyAccessToken?: string, expiresInHours = 24, playlistName?: string) {
   const ownerKey = ownerKeyForPlaylist(url);
   const { data } = await apiClient.post('/api/playlists', { url, service, expiresInHours, playlistName }, {
@@ -32,6 +36,14 @@ export async function submitPlaylist(url: string, service: string, spotifyAccess
 export async function getPlaylist(id: string) {
   const { data } = await apiClient.get(`/api/playlists/${encodeURIComponent(id)}`);
   return data;
+}
+
+export async function rematchApplePlaylist(id: string, sourceUrl: string): Promise<void> {
+  const ownerKey = localStorage.getItem(`bridgetunes-owner-key:${sourceUrl.trim()}`);
+  if (!ownerKey) throw new Error('Only the browser that created this playlist link can refresh its matches.');
+  await apiClient.post(`/api/playlists/${encodeURIComponent(id)}/rematch/apple`, {}, {
+    headers: { 'X-Playlist-Owner-Key': ownerKey },
+  });
 }
 
 export async function trackPlaylistVisit(id: string) {

@@ -5,6 +5,7 @@ import type { Track } from '@bridgetunes/adapters';
 import { db } from '../services/firebase.js';
 import { getSpotifyAppToken, getSpotifyPlaylistOwnerId, getSpotifyUserId } from '../services/spotify.js';
 import { publishQStashMessage } from '../services/qstash.js';
+import { cacheReadyPlaylist, getCachedPlaylist, getPlaylistCacheVersion, getProgressCount, invalidatePlaylistCache, resetPlaylistProgress } from '../services/cache.js';
 
 const chunkSize = 25;
 
@@ -25,6 +26,7 @@ async function queueMatchingTracks(playlistId: string, tracks: Track[], runId = 
   if (!qstashToken || !workerBaseUrl) throw new Error('Background job service is not configured');
 
   const playlistRef = db.collection('playlists').doc(playlistId);
+  await Promise.all([invalidatePlaylistCache(playlistId), resetPlaylistProgress(playlistId)]);
   const chunks: Track[][] = [];
   for (let i = 0; i < tracks.length; i += chunkSize) chunks.push(tracks.slice(i, i + chunkSize));
   await playlistRef.update({
@@ -39,7 +41,40 @@ async function queueMatchingTracks(playlistId: string, tracks: Track[], runId = 
   for (let i = 0; i < chunks.length; i++) {
     await publishQStashMessage(
       `${workerBaseUrl}/api/jobs/match-chunk`,
-      { playlistId, chunkIndex: i, runId, tracks: chunks[i] },
+      { playlistId, chunkIndex: i, runId },
+      `match-${playlistId}-${runId}-${i}`,
+    );
+  }
+}
+
+async function queueAppleRematch(playlistId: string, tracks: Track[]): Promise<void> {
+  const qstashToken = process.env.QSTASH_TOKEN;
+  const workerBaseUrl = process.env.RENDER_EXTERNAL_URL;
+  if (!qstashToken || !workerBaseUrl) throw new Error('Background job service is not configured');
+
+  const runId = crypto.randomUUID();
+  const playlistRef = db.collection('playlists').doc(playlistId);
+  await Promise.all([invalidatePlaylistCache(playlistId), resetPlaylistProgress(playlistId)]);
+  const chunks: Track[][] = [];
+  for (let i = 0; i < tracks.length; i += chunkSize) chunks.push(tracks.slice(i, i + chunkSize));
+  await playlistRef.update({
+    status: 'processing',
+    error: null,
+    processingRunId: runId,
+    completedChunkIndexes: [],
+    'progress.completedChunks': 0,
+    'progress.totalChunks': chunks.length,
+    tracks: tracks.map((track, position) => ({
+      ...track,
+      position,
+      availability: { ...(track as Track & { availability?: Record<string, string | null> }).availability, apple: null },
+    })),
+  });
+
+  for (let i = 0; i < chunks.length; i++) {
+    await publishQStashMessage(
+      `${workerBaseUrl}/api/jobs/match-chunk`,
+      { playlistId, chunkIndex: i, runId, targetService: 'apple' },
       `match-${playlistId}-${runId}-${i}`,
     );
   }
@@ -347,16 +382,60 @@ export async function playlistRoutes(fastify: FastifyInstance) {
 
   fastify.get('/api/playlists/:id', async (request: FastifyRequest<{ Params: { id: string } }>, reply) => {
     const { id } = request.params;
-    const doc = await db.collection('playlists').doc(id).get();
-    if (!doc.exists) return reply.status(404).send({ error: 'Playlist not found' });
-    const data = doc.data();
-    reply.header('Cache-Control', 'no-store');
+    let data = await getCachedPlaylist(id) as Record<string, any> | null;
+    const servedFromCache = Boolean(data);
+    const cacheVersion = servedFromCache ? -1 : getPlaylistCacheVersion(id);
+    if (!data) {
+      const doc = await db.collection('playlists').doc(id).get();
+      if (!doc.exists) return reply.status(404).send({ error: 'Playlist not found' });
+      data = doc.data() || null;
+    }
     if (!data) return reply.status(404).send({ error: 'Playlist not found' });
     if (data.expiresAt && Date.parse(data.expiresAt) <= Date.now()) {
+      await invalidatePlaylistCache(id);
       return reply.status(410).send({ error: 'This playlist link has expired.' });
+    }
+    const isReady = data.status === 'ready';
+    reply.header('Cache-Control', isReady ? 'public, max-age=60' : 'no-store');
+    if (isReady && !servedFromCache) {
+      await cacheReadyPlaylist(id, data, cacheVersion);
+    } else if (data.status === 'processing') {
+      const completedChunks = await getProgressCount(id);
+      if (completedChunks !== null) {
+        data = { ...data, progress: { ...data.progress, completedChunks: Math.max(Number(data.progress?.completedChunks || 0), completedChunks) } };
+      }
     }
     const { visitCount: _visitCount, lastVisitedAt: _lastVisitedAt, ownerKeyHash: _ownerKeyHash, ...publicData } = data;
     return reply.send(publicData);
+  });
+
+  fastify.post('/api/playlists/:id/rematch/apple', async (request: FastifyRequest<{ Params: { id: string } }>, reply) => {
+    const playlistRef = db.collection('playlists').doc(request.params.id);
+    const snapshot = await playlistRef.get();
+    if (!snapshot.exists) return reply.status(404).send({ error: 'Playlist not found' });
+
+    const playlist = snapshot.data()!;
+    const ownerKey = request.headers['x-playlist-owner-key'];
+    if (!isValidOwnerKey(typeof ownerKey === 'string' ? ownerKey : undefined, playlist.ownerKeyHash)) {
+      return reply.status(403).send({ error: 'Only the browser that created this link can refresh its matches.' });
+    }
+    if (playlist.expiresAt && Date.parse(playlist.expiresAt) <= Date.now()) {
+      return reply.status(410).send({ error: 'This playlist link has expired.' });
+    }
+    if (playlist.status === 'processing') return reply.status(409).send({ error: 'Playlist matching is already in progress.' });
+    if (!process.env.APPLE_DEVELOPER_TOKEN) return reply.status(503).send({ error: 'Apple Music is not configured on the API.' });
+
+    const tracks = Array.isArray(playlist.tracks) ? playlist.tracks as Track[] : [];
+    if (tracks.length === 0) return reply.status(422).send({ error: 'There are no saved tracks to match.' });
+
+    try {
+      await queueAppleRematch(request.params.id, tracks);
+      return reply.status(202).send({ playlistId: request.params.id, status: 'processing' });
+    } catch (error) {
+      await playlistRef.update({ status: 'failed', error: 'Could not queue Apple Music matching' });
+      request.log.error(error, 'Failed to queue Apple Music rematching');
+      return reply.status(502).send({ error: 'Could not queue Apple Music matching.' });
+    }
   });
 
   fastify.post('/api/playlists/:id/visit', async (request: FastifyRequest<{ Params: { id: string } }>, reply) => {
