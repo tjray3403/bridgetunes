@@ -46,6 +46,18 @@ export class SpotifyAdapter implements MusicAdapter {
     }));
   }
 
+  async getPlaylistName(accessToken: string, playlistId: string): Promise<string | null> {
+    const res = await fetch(`${this.baseUrl}/playlists/${encodeURIComponent(playlistId)}?fields=name`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) {
+      const details = await res.text();
+      throw new Error(`Spotify API error (${res.status}): ${details || res.statusText}`);
+    }
+    const data = await res.json() as { name?: string };
+    return data.name || null;
+  }
+
   async getPlaylistTracks(accessToken: string, playlistId: string): Promise<Track[]> {
     const tracks: Track[] = [];
     let nextUrl: string | null = `${this.baseUrl}/playlists/${encodeURIComponent(playlistId)}/items?limit=100`;

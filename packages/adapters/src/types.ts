@@ -19,6 +19,7 @@ export interface MusicAdapter {
   id: 'spotify' | 'apple' | 'tidal' | 'youtube';
   parseUrl(url: string): { playlistId: string } | null;
   getPlaylists(accessToken: string): Promise<Playlist[]>;
+  getPlaylistName(accessToken: string, playlistId: string): Promise<string | null>;
   getPlaylistTracks(accessToken: string, playlistId: string): Promise<Track[]>;
   createPlaylist(accessToken: string, userId: string, name: string, description?: string): Promise<Playlist>;
   addTracksToPlaylist(accessToken: string, playlistId: string, trackIdentifiers: string[]): Promise<void>;

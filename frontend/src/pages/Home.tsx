@@ -8,8 +8,9 @@ type Service = 'spotify' | 'apple';
 
 export function Home() {
   const [url, setUrl] = useState('');
+  const [playlistName, setPlaylistName] = useState('');
   const [service, setService] = useState<Service>('spotify');
-  const [expiresInDays, setExpiresInDays] = useState(1);
+  const [expiresInHours, setExpiresInHours] = useState('24');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [spotifyAuthPrompt, setSpotifyAuthPrompt] = useState(false);
@@ -18,13 +19,18 @@ export function Home() {
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!url.trim()) return;
+    const expirationHours = Number(expiresInHours);
+    if (!/^\d+$/.test(expiresInHours) || !Number.isInteger(expirationHours) || expirationHours < 1 || expirationHours > 720) {
+      setError('Enter a whole number of hours between 1 and 720.');
+      return;
+    }
 
     setLoading(true);
     setError('');
     setSpotifyAuthPrompt(false);
 
     try {
-      const result = await submitPlaylist(url, service, service === 'spotify' ? currentSpotifyAccessToken(['playlist-read-private']) : undefined, expiresInDays);
+      const result = await submitPlaylist(url, service, service === 'spotify' ? currentSpotifyAccessToken(['playlist-read-private']) : undefined, expirationHours, playlistName);
       navigate(`/p/${result.playlistId}`);
     } catch (cause: unknown) {
       if (service === 'spotify' && typeof cause === 'object' && cause !== null && 'response' in cause) {
@@ -44,7 +50,7 @@ export function Home() {
     setLoading(true);
     setError('');
     try {
-      sessionStorage.setItem('bridgetunes-pending-playlist', JSON.stringify({ url, service, expiresInDays }));
+      sessionStorage.setItem('bridgetunes-pending-playlist', JSON.stringify({ url, service, playlistName, expiresInHours: Number(expiresInHours) }));
       window.location.assign(await spotifyAuthorizationUrl());
     } catch (cause: unknown) {
       setError(cause instanceof Error ? cause.message : 'Could not start Spotify sign-in.');
@@ -107,19 +113,31 @@ export function Home() {
             />
             <p className="field-help">We only read the playlist details needed to find your tracks.</p>
 
-            <label className="field-label" htmlFor="link-duration">Link duration (days)</label>
+            <label className="field-label" htmlFor="playlist-name">Playlist name (optional)</label>
+            <input
+              id="playlist-name"
+              className="field-control"
+              type="text"
+              maxLength={100}
+              placeholder="Use the source playlist name"
+              value={playlistName}
+              onChange={(event) => setPlaylistName(event.target.value)}
+            />
+            <p className="field-help">BridgeTunes reads the source name when available. Enter a name here if it can’t be read, or to use a different name.</p>
+
+            <label className="field-label" htmlFor="link-duration">Link duration (hours)</label>
             <input
               id="link-duration"
               className="field-control duration-input"
-              type="number"
-              min={1}
-              max={30}
-              step={1}
-              value={expiresInDays}
-              onChange={(event) => setExpiresInDays(Number(event.target.value))}
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={3}
+              value={expiresInHours}
+              onChange={(event) => setExpiresInHours(event.target.value)}
               required
             />
-            <p className="field-help">Choose 1–30 days. Links last 1 day by default.</p>
+            <p className="field-help">Choose 1–720 hours. Links last 24 hours by default.</p>
 
             {error && <p role="alert" className="notice notice-error">{error}</p>}
 
@@ -139,7 +157,7 @@ export function Home() {
             <button type="submit" className="button button-primary import-submit" disabled={loading}>
               {loading ? <><Loader2 className="spin" size={18} /> Preparing your link…</> : <>Create or update your link <ArrowRight size={18} /></>}
             </button>
-            <div className="privacy-note"><Check size={13} /> Resubmitting an active Spotify playlist link updates it in place. Only this browser can replace it.</div>
+            <div className="privacy-note"><Check size={13} /> Resubmitting an active playlist link updates it in place. Only this browser can replace it.</div>
           </form>
         </div>
 
