@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://bridgetunes-api.onrender.com';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://bridgetunes.onrender.com';
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -18,8 +18,16 @@ function ownerKeyForPlaylist(url: string): string {
   return ownerKey;
 }
 
-export function hasPlaylistOwnerKey(url: string): boolean {
-  return Boolean(localStorage.getItem(`bridgetunes-owner-key:${url.trim()}`));
+export function hasPlaylistOwnerKey(url: string, playlistId?: string): boolean {
+  return Boolean((playlistId && ownerKeyForPlaylistId(playlistId)) || localStorage.getItem(`bridgetunes-owner-key:${url.trim()}`));
+}
+
+function storePlaylistOwnerKey(playlistId: string, ownerKey: string): void {
+  localStorage.setItem(`bridgetunes-owner-key:playlist:${playlistId}`, ownerKey);
+}
+
+function ownerKeyForPlaylistId(playlistId: string): string | null {
+  return localStorage.getItem(`bridgetunes-owner-key:playlist:${playlistId}`);
 }
 
 export async function submitPlaylist(url: string, service: string, spotifyAccessToken?: string, expiresInHours = 24, playlistName?: string) {
@@ -30,7 +38,9 @@ export async function submitPlaylist(url: string, service: string, spotifyAccess
       ...(spotifyAccessToken ? { Authorization: `Bearer ${spotifyAccessToken}` } : {}),
     },
   });
-  return data as { playlistId: string; status: string };
+  const result = data as { playlistId: string; status: string };
+  if (result.playlistId) storePlaylistOwnerKey(result.playlistId, ownerKey);
+  return result;
 }
 
 export async function getPlaylist(id: string) {
@@ -39,11 +49,18 @@ export async function getPlaylist(id: string) {
 }
 
 export async function rematchApplePlaylist(id: string, sourceUrl: string): Promise<void> {
-  const ownerKey = localStorage.getItem(`bridgetunes-owner-key:${sourceUrl.trim()}`);
+  const ownerKey = ownerKeyForPlaylistId(id) || localStorage.getItem(`bridgetunes-owner-key:${sourceUrl.trim()}`);
   if (!ownerKey) throw new Error('Only the browser that created this playlist link can refresh its matches.');
-  await apiClient.post(`/api/playlists/${encodeURIComponent(id)}/rematch/apple`, {}, {
-    headers: { 'X-Playlist-Owner-Key': ownerKey },
-  });
+  try {
+    await apiClient.post(`/api/playlists/${encodeURIComponent(id)}/rematch/apple`, {}, {
+      headers: { 'X-Playlist-Owner-Key': ownerKey },
+    });
+  } catch (cause) {
+    if (axios.isAxiosError<{ error?: string }>(cause) && cause.response?.data?.error) {
+      throw new Error(cause.response.data.error);
+    }
+    throw cause;
+  }
 }
 
 export async function trackPlaylistVisit(id: string) {
