@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "node scripts/sync-adapters.mjs && tsc",
     "start": "node dist/index.js",
     "start:local": "node --env-file=.env dist/index.js"
   },
