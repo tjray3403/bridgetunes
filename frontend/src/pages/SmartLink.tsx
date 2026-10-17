@@ -42,6 +42,17 @@ export function SmartLink() {
   const visitTrackedFor = useRef<string | null>(null);
 
   useEffect(() => {
+    setPlaylist(null);
+    setError('');
+    setShareMessage('');
+    setSelectedProvider('spotify');
+    setSpotifyPlaylistUrl('');
+    setApplePlaylistUrl('');
+    setSpotifyProgress(null);
+    setAppleProgress(null);
+  }, [id]);
+
+  useEffect(() => {
     if (!id || visitTrackedFor.current === id) return;
     visitTrackedFor.current = id;
     void trackPlaylistVisit(id).catch(() => undefined);
@@ -128,7 +139,7 @@ export function SmartLink() {
     .filter((trackId): trackId is string => Boolean(trackId));
   const canRematchApple = isReady
     && appleTrackIds.length === 0
-    && Boolean(playlist.sourceUrl && hasPlaylistOwnerKey(playlist.sourceUrl));
+    && Boolean(playlist.sourceUrl && hasPlaylistOwnerKey(playlist.sourceUrl, id));
 
   const copyShareLink = async () => {
     try {
