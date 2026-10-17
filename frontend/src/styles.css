@@ -186,12 +186,9 @@ a { color: inherit; text-decoration: none; }
 .stat-divider { width: 3px; height: 3px; border-radius: 50%; background: #746d63; }
 .share-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 16px; }
 .share-actions .button { padding-inline: 14px; }
-.playlist-action-menu { position: relative; }
-.playlist-menu-trigger svg:last-child { margin-left: 2px; }
-.playlist-menu-panel { position: absolute; z-index: 20; top: calc(100% + 7px); right: 0; width: max-content; min-width: 220px; padding: 6px; border: 1px solid var(--line-strong); border-radius: 11px; background: #211f1c; box-shadow: 0 14px 36px rgba(0,0,0,.42); }
-.playlist-menu-item { width: 100%; min-height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border: 0; border-radius: 7px; background: transparent; color: #e6e0d6; text-align: left; text-decoration: none; font: inherit; font-size: 11px; cursor: pointer; }
-.playlist-menu-item:hover:not(:disabled), .playlist-menu-item:focus-visible { outline: 0; background: rgba(255,255,255,.07); color: #fff; }
-.playlist-menu-item:disabled { color: #746f68; cursor: not-allowed; }
+.provider-select { min-width: 145px; color-scheme: dark; cursor: pointer; }
+.provider-select option { background: #211f1c; color: #e6e0d6; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .button-secondary { padding: 0 14px; border: 1px solid var(--line-strong); background: rgba(255,255,255,.04); color: #e2ddd4; }
 .button-secondary:hover:not(:disabled) { background: rgba(255,255,255,.08); }
 .share-action-help, .share-action-message { margin: 9px 0 0; color: #817a70; font-size: 10px; line-height: 1.5; }

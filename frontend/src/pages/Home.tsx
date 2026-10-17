@@ -9,7 +9,6 @@ type Service = 'spotify' | 'apple';
 export function Home() {
   const [url, setUrl] = useState('');
   const [playlistName, setPlaylistName] = useState('');
-  const [service, setService] = useState<Service>('spotify');
   const [expiresInHours, setExpiresInHours] = useState('24');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -19,6 +18,11 @@ export function Home() {
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!url.trim()) return;
+    const service = detectService(url);
+    if (!service) {
+      setError('Paste a Spotify or Apple Music playlist link.');
+      return;
+    }
     const expirationHours = Number(expiresInHours);
     if (!/^\d+$/.test(expiresInHours) || !Number.isInteger(expirationHours) || expirationHours < 1 || expirationHours > 720) {
       setError('Enter a whole number of hours between 1 and 720.');
@@ -47,6 +51,11 @@ export function Home() {
   };
 
   const connectSpotify = async () => {
+    const service = detectService(url);
+    if (service !== 'spotify') {
+      setError('Paste a Spotify playlist link to connect Spotify.');
+      return;
+    }
     setLoading(true);
     setError('');
     try {
@@ -91,27 +100,18 @@ export function Home() {
               <span className="step-badge">01 <ArrowDown size={13} /></span>
             </div>
 
-            <label className="field-label" htmlFor="source-service">Playlist source</label>
-            <div className="select-wrap">
-              <select id="source-service" value={service} onChange={(event) => setService(event.target.value as Service)} className="field-control">
-                <option value="spotify">Spotify</option>
-                <option value="apple">Apple Music</option>
-              </select>
-              <ArrowDown className="select-icon" size={16} aria-hidden="true" />
-            </div>
-
             <label className="field-label" htmlFor="playlist-url">Playlist URL</label>
             <input
               id="playlist-url"
               className="field-control url-input"
               type="url"
-              placeholder={service === 'spotify' ? 'open.spotify.com/playlist/…' : 'music.apple.com/playlist/…'}
+              placeholder="Spotify or Apple Music playlist link"
               value={url}
               onChange={(event) => setUrl(event.target.value)}
               required
               autoComplete="url"
             />
-            <p className="field-help">We only read the playlist details needed to find your tracks.</p>
+            <p className="field-help">Spotify or Apple Music is detected from the link. We only read the playlist details needed to find your tracks.</p>
 
             <label className="field-label" htmlFor="playlist-name">Playlist name (optional)</label>
             <input
@@ -192,4 +192,15 @@ function getErrorMessage(error: unknown): string {
     if (response?.data?.error) return response.data.error;
   }
   return 'Could not create the playlist link. Please check the URL and try again.';
+}
+
+function detectService(value: string): Service | null {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    if (hostname === 'spotify.com' || hostname.endsWith('.spotify.com')) return 'spotify';
+    if (hostname === 'music.apple.com') return 'apple';
+    return null;
+  } catch {
+    return null;
+  }
 }

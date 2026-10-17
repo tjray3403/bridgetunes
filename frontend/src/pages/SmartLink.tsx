@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { AlertCircle, ArrowLeft, Check, CheckCircle2, ChevronDown, Clipboard, Loader2, Music2, Sparkles } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Check, CheckCircle2, Clipboard, Loader2, Music2, Sparkles } from 'lucide-react';
 import { getPlaylist, trackPlaylistVisit } from '../services/api';
 import { currentSpotifyAccessToken, spotifyAuthorizationUrl } from '../services/spotifyAuth';
 import { createSpotifyPlaylist, type SpotifyCreationProgress } from '../services/spotifyPlaylist';
@@ -36,8 +36,7 @@ export function SmartLink() {
   const [appleSetupError, setAppleSetupError] = useState('');
   const [appleProgress, setAppleProgress] = useState<AppleCreationProgress | null>(null);
   const [applePlaylistUrl, setApplePlaylistUrl] = useState('');
-  const [providerMenuOpen, setProviderMenuOpen] = useState(false);
-  const providerMenuRef = useRef<HTMLDivElement>(null);
+  const [selectedProvider, setSelectedProvider] = useState<'spotify' | 'apple'>('spotify');
   const visitTrackedFor = useRef<string | null>(null);
 
   useEffect(() => {
@@ -55,22 +54,6 @@ export function SmartLink() {
     });
     return () => { active = false; };
   }, []);
-
-  useEffect(() => {
-    if (!providerMenuOpen) return;
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      if (event.target instanceof Node && !providerMenuRef.current?.contains(event.target)) setProviderMenuOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setProviderMenuOpen(false);
-    };
-    document.addEventListener('mousedown', closeOnOutsideClick);
-    document.addEventListener('keydown', closeOnEscape);
-    return () => {
-      document.removeEventListener('mousedown', closeOnOutsideClick);
-      document.removeEventListener('keydown', closeOnEscape);
-    };
-  }, [providerMenuOpen]);
 
   useEffect(() => {
     if (!id) return;
@@ -209,6 +192,17 @@ export function SmartLink() {
     }
   };
 
+  const selectedPlaylistUrl = selectedProvider === 'spotify' ? spotifyPlaylistUrl : applePlaylistUrl;
+  const selectedProviderBusy = selectedProvider === 'spotify' ? spotifyBusy : appleBusy;
+  const selectedProviderHasMatches = selectedProvider === 'spotify'
+    ? spotifyTrackUris.length > 0
+    : appleTrackIds.length > 0;
+  const selectedProviderName = selectedProvider === 'spotify' ? 'Spotify' : 'Apple Music';
+  const createSelectedPlaylist = () => {
+    if (selectedProvider === 'spotify') void createInSpotify();
+    else void createInAppleMusic();
+  };
+
   return (
     <main className="site-shell share-shell">
       <div className="ambient ambient-gold" aria-hidden="true" />
@@ -231,42 +225,37 @@ export function SmartLink() {
             <div className="share-stats"><span>{tracks.length} tracks</span><span className="stat-divider" /><span>{isReady ? 'Ready to share' : isProcessing ? 'Matching tracks' : 'Import status'}</span></div>
             <div className="share-actions">
               <button type="button" className="button button-secondary" onClick={() => void copyShareLink()}><Clipboard size={15} /> Copy link</button>
-              <div className="playlist-action-menu" ref={providerMenuRef}>
-                <button
-                  type="button"
-                  className="button button-primary playlist-menu-trigger"
-                  aria-haspopup="menu"
-                  aria-expanded={providerMenuOpen}
-                  onClick={() => setProviderMenuOpen((open) => !open)}
-                >
-                  <Music2 size={15} /> Open or create playlist <ChevronDown size={15} />
+              <label className="visually-hidden" htmlFor="playlist-destination">Choose a music service</label>
+              <select
+                id="playlist-destination"
+                className="button button-secondary provider-select"
+                value={selectedProvider}
+                onChange={(event) => setSelectedProvider(event.target.value as 'spotify' | 'apple')}
+              >
+                <option value="spotify">Spotify</option>
+                <option value="apple">Apple Music</option>
+              </select>
+              {selectedPlaylistUrl ? (
+                <a className="button button-primary" href={selectedPlaylistUrl} target="_blank" rel="noreferrer"><Music2 size={15} /> Open in {selectedProviderName}</a>
+              ) : (
+                <button type="button" className="button button-primary" onClick={createSelectedPlaylist} disabled={!isReady || !selectedProviderHasMatches || selectedProviderBusy}>
+                  {selectedProviderBusy ? <Loader2 className="spin" size={15} /> : <Music2 size={15} />}
+                  {selectedProviderBusy
+                    ? selectedProvider === 'spotify' ? 'Creating in Spotify…' : 'Connecting to Apple Music…'
+                    : !selectedProviderHasMatches && isReady ? `No ${selectedProviderName} matches`
+                      : selectedProvider === 'apple' && appleSetupError ? 'Retry Apple Music setup'
+                        : `Create in ${selectedProviderName}`}
                 </button>
-                {providerMenuOpen && <div className="playlist-menu-panel" role="menu" aria-label="Choose music service">
-                  {spotifyPlaylistUrl ? (
-                    <a role="menuitem" className="playlist-menu-item" href={spotifyPlaylistUrl} target="_blank" rel="noreferrer" onClick={() => setProviderMenuOpen(false)}><Music2 size={15} /> Open in Spotify</a>
-                  ) : (
-                    <button role="menuitem" type="button" className="playlist-menu-item" onClick={() => { setProviderMenuOpen(false); void createInSpotify(); }} disabled={!isReady || spotifyTrackUris.length === 0 || spotifyBusy}>
-                      {spotifyBusy ? <Loader2 className="spin" size={15} /> : <Music2 size={15} />}
-                      {spotifyBusy ? 'Creating in Spotify…' : 'Create in Spotify'}
-                    </button>
-                  )}
-                  {applePlaylistUrl ? (
-                    <a role="menuitem" className="playlist-menu-item" href={applePlaylistUrl} target="_blank" rel="noreferrer" onClick={() => setProviderMenuOpen(false)}><Music2 size={15} /> Open in Apple Music</a>
-                  ) : (
-                    <button role="menuitem" type="button" className="playlist-menu-item" onClick={() => { setProviderMenuOpen(false); void createInAppleMusic(); }} disabled={!isReady || appleTrackIds.length === 0 || appleBusy || (!appleSetupReady && !appleSetupError)}>
-                      {appleBusy ? <Loader2 className="spin" size={15} /> : <Music2 size={15} />}
-                      {appleBusy ? 'Connecting to Apple Music…' : !appleSetupReady && !appleSetupError ? 'Loading Apple Music…' : appleSetupError ? 'Retry Apple Music setup' : 'Create in Apple Music'}
-                    </button>
-                  )}
-                </div>}
-              </div>
+              )}
             </div>
             {spotifyBusy && spotifyProgress && <SpotifyProgress progress={spotifyProgress} />}
             {appleBusy && appleProgress && <AppleProgress progress={appleProgress} />}
             <p className="share-action-help">Each service will ask you to authorize creating a private playlist with the matched tracks.</p>
             {appleSetupError && <p className="share-action-message" role="status">Apple Music setup: {appleSetupError}</p>}
-            {isReady && spotifyTrackUris.length === 0 && appleTrackIds.length === 0
-              ? <p className="share-action-message" role="status">No Spotify or Apple Music track matches are available for this link yet.</p>
+            {isReady && appleTrackIds.length === 0
+              ? <p className="share-action-message" role="status">No Apple Music track matches are saved for this link. Resubmit the source playlist from the create-link page to run matching again.</p>
+              : isReady && spotifyTrackUris.length === 0
+                ? <p className="share-action-message" role="status">No Spotify track matches are available for this link yet.</p>
               : null}
             {shareMessage && <p className="share-action-message" role="status">{shareMessage}</p>}
           </div>
