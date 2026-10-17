@@ -58,6 +58,7 @@ BridgeTunes turns a Spotify or Apple Music playlist link into a shareable page s
 
 - `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY` for Firestore access.
 - `QSTASH_URL`, `QSTASH_TOKEN`, `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY` for publishing and verifying queued jobs. Use the QStash region URL shown in Upstash Quickstart (EU defaults to `https://qstash.upstash.io`; US uses its regional URL).
+- `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` for Redis matching progress and hot track matches. Ready playlist snapshots stay in short-lived Render process memory; track matches are cached by ISRC in Redis for 24 hours, while Firestore remains the durable source.
 - `RENDER_EXTERNAL_URL` for QStash callbacks.
 - `FRONTEND_ORIGINS` for local and Firebase Hosting CORS access.
 - `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` on Render for public Spotify playlist imports and catalog searches. The API retrieves and caches its short-lived app token.

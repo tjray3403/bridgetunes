@@ -3,6 +3,17 @@ import { Receiver } from '@upstash/qstash';
 import { db } from '../services/firebase.js';
 import { getSpotifyAppToken } from '../services/spotify.js';
 import { publishQStashMessage } from '../services/qstash.js';
+import {
+  cacheTrackMatches,
+  cacheKeyForTrack,
+  getMemoryTrackMatches,
+  getRedisTrackMatches,
+  markChunkComplete,
+  normalizeIsrc,
+  rememberTrackMatches,
+  type TrackMatch,
+  type TrackMatchRecord,
+} from '../services/cache.js';
 import { SpotifyAdapter, AppleMusicAdapter } from '@bridgetunes/adapters';
 
 const receiver = new Receiver({
@@ -62,19 +73,18 @@ export async function workerRoutes(fastify: FastifyInstance) {
 
       // Chunk tracks into groups of 25 to respect free-tier CPU/memory constraints
       const chunkSize = 25;
-      const chunks: any[][] = [];
-      for (let i = 0; i < rawTracks.length; i += chunkSize) {
-        chunks.push(rawTracks.slice(i, i + chunkSize));
-      }
+      const chunkCount = Math.ceil(rawTracks.length / chunkSize);
 
       // Update total chunks in Firestore
       await db.collection('playlists').doc(playlistId).update({
         name: sourcePlaylistName || 'Your playlist',
-        'progress.totalChunks': chunks.length,
+        completedChunkIndexes: [],
+        'progress.completedChunks': 0,
+        'progress.totalChunks': chunkCount,
         tracks: rawTracks.map((t, idx) => ({ ...t, position: idx, availability: {} })),
       });
 
-      if (chunks.length === 0) {
+      if (chunkCount === 0) {
         await db.collection('playlists').doc(playlistId).update({ status: 'failed', error: 'No tracks were found in this playlist' });
         return reply.send({ success: false, error: 'No tracks found' });
       }
@@ -84,15 +94,15 @@ export async function workerRoutes(fastify: FastifyInstance) {
       const workerBaseUrl = process.env.RENDER_EXTERNAL_URL;
       if (!qstashToken || !workerBaseUrl) throw new Error('QStash publishing is not configured');
 
-      for (let i = 0; i < chunks.length; i++) {
+      for (let i = 0; i < chunkCount; i++) {
         await publishQStashMessage(
           `${workerBaseUrl}/api/jobs/match-chunk`,
-          { playlistId, chunkIndex: i, tracks: chunks[i] },
+          { playlistId, chunkIndex: i },
           `match-${playlistId}-${i}`,
         );
       }
 
-      return reply.send({ success: true, chunks: chunks.length });
+      return reply.send({ success: true, chunks: chunkCount });
     } catch (err: any) {
       await db.collection('playlists').doc(playlistId).update({ status: 'failed', error: err.message });
       return reply.status(500).send({ error: err.message });
@@ -100,8 +110,8 @@ export async function workerRoutes(fastify: FastifyInstance) {
   });
 
   // Worker 2: Match chunk tracks against target platforms
-  fastify.post('/api/jobs/match-chunk', async (request: FastifyRequest<{ Body: { playlistId: string; chunkIndex: number; runId?: string; tracks: any[] } }>, reply) => {
-    const { playlistId, chunkIndex, runId, tracks } = request.body;
+  fastify.post('/api/jobs/match-chunk', async (request: FastifyRequest<{ Body: { playlistId: string; chunkIndex: number; runId?: string; targetService?: 'apple' | 'spotify'; tracks?: any[] } }>, reply) => {
+    const { playlistId, chunkIndex, runId, targetService } = request.body;
 
     const playlistRef = db.collection('playlists').doc(playlistId);
     const doc = await playlistRef.get();
@@ -112,23 +122,141 @@ export async function workerRoutes(fastify: FastifyInstance) {
     const completedChunkIndexes: number[] = playlistData.completedChunkIndexes || [];
     if (completedChunkIndexes.includes(chunkIndex)) return reply.send({ success: true, duplicate: true });
 
-    // Process matching for this chunk (ISRC lookup / fuzzy fallback)
+    const savedTracks: any[] = Array.isArray(playlistData.tracks) ? playlistData.tracks : [];
+    const tracks = savedTracks.slice(chunkIndex * 25, chunkIndex * 25 + 25);
+    if (!Number.isInteger(chunkIndex) || chunkIndex < 0 || tracks.length === 0) {
+      return reply.status(400).send({ error: 'No saved tracks exist for this matching chunk.' });
+    }
+
+    // Load the whole chunk's hot match cache with one Redis MGET. Firestore remains
+    // the durable cache and is consulted only for ISRCs Redis did not have.
     const spotifyAdapter = new SpotifyAdapter();
     const appleAdapter = new AppleMusicAdapter();
-    const spotifyToken = await getSpotifyAppToken();
+    const spotifyToken = targetService === 'apple' ? '' : await getSpotifyAppToken();
     const appleToken = process.env.APPLE_DEVELOPER_TOKEN || '';
     const sourceIsSpotify = playlistData.sourceService === 'spotify';
+    if (targetService !== 'spotify' && !appleToken) {
+      return reply.status(503).send({ error: 'Apple Music is not configured on the API.' });
+    }
 
+    const isrcs = [...new Set(tracks.map((track) => normalizeIsrc(track.isrc)).filter((isrc): isrc is string => Boolean(isrc)))];
+    const matchRecords = new Map<string, TrackMatchRecord>();
+    const redisMisses: string[] = [];
+    for (const isrc of isrcs) {
+      const cached = getMemoryTrackMatches(isrc);
+      if (cached) matchRecords.set(isrc, cached);
+      else redisMisses.push(isrc);
+    }
+    if (redisMisses.length) {
+      const redisRecords = await getRedisTrackMatches(redisMisses);
+      for (const [isrc, record] of redisRecords) matchRecords.set(isrc, record);
+    }
+
+    const firestoreMisses = isrcs.filter((isrc) => !matchRecords.has(isrc));
+    if (firestoreMisses.length) {
+      const snapshots = await db.getAll(...firestoreMisses.map((isrc) => db.collection('tracks').doc(isrc)));
+      const foundFromFirestore = new Map<string, TrackMatchRecord>();
+      snapshots.forEach((snapshot, index) => {
+        if (!snapshot.exists) return;
+        const data = snapshot.data() as { matches?: Record<string, TrackMatch> } | undefined;
+        if (data?.matches) {
+          const record = { matches: data.matches };
+          const isrc = firestoreMisses[index];
+          matchRecords.set(isrc, record);
+          foundFromFirestore.set(isrc, record);
+          rememberTrackMatches(isrc, record);
+        }
+      });
+      await cacheTrackMatches(foundFromFirestore);
+    }
+
+    const changedRecords = new Map<string, TrackMatchRecord>();
+    const trackWrites = db.batch();
     const resolvedTracks = [] as Array<{ position: number; availability: { spotify: string | null; apple: string | null } }>;
     for (const [offset, track] of tracks.entries()) {
       const position = chunkIndex * 25 + offset;
-      // Spotify-sourced tracks already carry their canonical Spotify URI; searching
-      // them again can fail or return a different recording unnecessarily.
-      const spotifyId = sourceIsSpotify && typeof track.id === 'string' && track.id.startsWith('spotify:track:')
-        ? track.id
-        : await spotifyAdapter.searchTrack(spotifyToken, track, 'US').catch(() => null);
-      const appleId = appleToken ? await appleAdapter.searchTrack(appleToken, track, 'us').catch(() => null) : null;
-      resolvedTracks.push({ position, availability: { spotify: spotifyId, apple: appleId } });
+      const isrc = normalizeIsrc(track.isrc);
+      const record = isrc ? (matchRecords.get(isrc) || { matches: {} }) : undefined;
+      const availability: { spotify: string | null; apple: string | null } = { spotify: null, apple: null };
+      let recordChanged = false;
+
+      const findCached = (service: 'spotify' | 'apple'): TrackMatch | undefined => {
+        const cacheField = cacheKeyForTrack(track, service, 'us');
+        return cacheField ? record?.matches[cacheField] : undefined;
+      };
+      const isReusable = (match: TrackMatch | undefined): boolean => Boolean(
+        match && (match.id || (match.recheckAt && Date.parse(match.recheckAt) > Date.now())),
+      );
+      const saveMatch = (service: 'spotify' | 'apple', id: string | null) => {
+        const cacheField = cacheKeyForTrack(track, service, 'us');
+        if (!record || !cacheField) return;
+        record.matches[cacheField] = id
+          ? { id, checkedAt: new Date().toISOString() }
+          : { id: null, checkedAt: new Date().toISOString(), recheckAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() };
+        recordChanged = true;
+      };
+
+      if (targetService !== 'apple') {
+        if (sourceIsSpotify && typeof track.id === 'string' && track.id.startsWith('spotify:track:')) {
+          availability.spotify = track.id;
+          saveMatch('spotify', track.id);
+        } else {
+          const cached = findCached('spotify');
+          if (isReusable(cached)) availability.spotify = cached!.id;
+          else {
+            try {
+              availability.spotify = await spotifyAdapter.searchTrack(spotifyToken, track, 'US');
+              saveMatch('spotify', availability.spotify);
+            } catch (error) {
+              const providerError = error as Error & { status?: number; retryAfter?: string };
+              const status = providerError.status;
+              request.log.error({ err: error, position, hasIsrc: Boolean(isrc) }, 'Spotify catalog matching failed for a saved track');
+              const response = reply.status(status === 429 || (status !== undefined && status >= 500) ? 503 : 502);
+              if (status === 429 || (status !== undefined && status >= 500)) response.header('Retry-After', providerError.retryAfter || '30');
+              return response.send({ error: 'Spotify catalog search failed; the matching job can be retried.' });
+            }
+          }
+        }
+      }
+
+      if (targetService !== 'spotify' && appleToken) {
+        const cached = findCached('apple');
+        if (isReusable(cached)) availability.apple = cached!.id;
+        else {
+          try {
+            availability.apple = await appleAdapter.searchTrack(appleToken, track, 'us');
+            saveMatch('apple', availability.apple);
+          } catch (error) {
+            const providerError = error as Error & { status?: number; retryAfter?: string };
+            const status = providerError.status;
+            request.log.error({ err: error, position, hasIsrc: Boolean(isrc) }, 'Apple Music catalog matching failed for a saved track');
+            const response = reply.status(status === 429 || (status !== undefined && status >= 500) ? 503 : 502);
+            if (status === 429 || (status !== undefined && status >= 500)) response.header('Retry-After', providerError.retryAfter || '30');
+            return response.send({ error: 'Apple Music catalog search failed; the matching job can be retried.' });
+          }
+        }
+      }
+
+      if (isrc && recordChanged && record) {
+        changedRecords.set(isrc, record);
+        matchRecords.set(isrc, record);
+        rememberTrackMatches(isrc, record);
+      }
+      resolvedTracks.push({ position, availability });
+    }
+
+    // Durable per-ISRC matches allow future imports to bypass provider searches.
+    for (const [isrc, record] of changedRecords) {
+      trackWrites.set(db.collection('tracks').doc(isrc), { matches: record.matches }, { merge: true });
+    }
+    if (changedRecords.size) await trackWrites.commit();
+    await cacheTrackMatches(changedRecords);
+
+    for (const [offset, track] of tracks.entries()) {
+      const position = chunkIndex * 25 + offset;
+      if (sourceIsSpotify && targetService === 'apple' && typeof track.id === 'string' && track.id.startsWith('spotify:track:')) {
+        resolvedTracks[offset].availability.spotify = track.id;
+      }
     }
 
     const result = await db.runTransaction(async (transaction) => {
@@ -143,9 +271,16 @@ export async function workerRoutes(fastify: FastifyInstance) {
       }
       const allTracks = latest.tracks || [];
       for (const resolved of resolvedTracks) {
-        if (allTracks[resolved.position]) allTracks[resolved.position].availability = resolved.availability;
+        if (allTracks[resolved.position]) {
+          allTracks[resolved.position].availability = {
+            ...(allTracks[resolved.position].availability || {}),
+            ...(targetService === 'apple' ? { apple: resolved.availability.apple } : {}),
+            ...(targetService === 'spotify' ? { spotify: resolved.availability.spotify } : {}),
+            ...(!targetService ? resolved.availability : {}),
+          };
+        }
       }
-      const completedChunks = (latest.progress?.completedChunks || 0) + 1;
+      const completedChunks = completedIndexes.length + 1;
       const totalChunks = latest.progress?.totalChunks || 1;
       transaction.update(playlistRef, {
         tracks: allTracks,
@@ -155,6 +290,10 @@ export async function workerRoutes(fastify: FastifyInstance) {
       });
       return { completedChunks, duplicate: false, stale: false };
     });
+
+    if (!result.stale) {
+      await markChunkComplete(playlistId, chunkIndex);
+    }
 
     return reply.send({ success: true, ...result });
   });

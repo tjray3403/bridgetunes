@@ -128,11 +128,15 @@ export class SpotifyAdapter implements MusicAdapter {
       const isrcRes = await fetch(`${this.baseUrl}/search?q=isrc:${track.isrc}&type=track&market=${storefront}&limit=1`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
-      if (isrcRes.ok) {
-        const data = await isrcRes.json();
-        if (data.tracks?.items?.length > 0) {
-          return data.tracks.items[0].uri;
-        }
+      if (!isrcRes.ok) {
+        const error = new Error(`Spotify search failed (${isrcRes.status})`) as Error & { status: number; retryAfter?: string };
+        error.status = isrcRes.status;
+        error.retryAfter = isrcRes.headers.get('retry-after') || undefined;
+        throw error;
+      }
+      const data = await isrcRes.json() as { tracks?: { items?: Array<{ uri: string }> } };
+      if (data.tracks?.items?.length) {
+        return data.tracks.items[0].uri;
       }
     }
 
@@ -141,8 +145,13 @@ export class SpotifyAdapter implements MusicAdapter {
     const fallbackRes = await fetch(`${this.baseUrl}/search?q=${cleanQuery}&type=track&market=${storefront}&limit=1`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
-    if (!fallbackRes.ok) return null;
-    const fallbackData = await fallbackRes.json();
+    if (!fallbackRes.ok) {
+      const error = new Error(`Spotify search failed (${fallbackRes.status})`) as Error & { status: number; retryAfter?: string };
+      error.status = fallbackRes.status;
+      error.retryAfter = fallbackRes.headers.get('retry-after') || undefined;
+      throw error;
+    }
+    const fallbackData = await fallbackRes.json() as { tracks?: { items?: Array<{ uri: string }> } };
     return fallbackData.tracks?.items?.[0]?.uri || null;
   }
 }

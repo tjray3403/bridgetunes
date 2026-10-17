@@ -101,14 +101,20 @@ export class AppleMusicAdapter implements MusicAdapter {
 
   async searchTrack(userToken: string, track: Track, storefront: string = 'us'): Promise<string | null> {
     // 1. ISRC Catalog Lookup
-    if (track.isrc) {
-      const isrcRes = await fetch(`${this.baseUrl}/catalog/${storefront}/songs?filter[isrc]=${track.isrc}`, {
+    const isrc = track.isrc?.trim().toUpperCase();
+    if (isrc) {
+      const params = new URLSearchParams({ 'filter[isrc]': isrc });
+      const isrcRes = await fetch(`${this.baseUrl}/catalog/${storefront}/songs?${params.toString()}`, {
         headers: { Authorization: `Bearer ${process.env.APPLE_DEVELOPER_TOKEN}` },
       });
-      if (isrcRes.ok) {
-        const data = await isrcRes.json();
-        if (data.data?.length > 0) return data.data[0].id;
+      if (!isrcRes.ok) {
+        const error = new Error(`Apple Music search failed (${isrcRes.status})`) as Error & { status: number; retryAfter?: string };
+        error.status = isrcRes.status;
+        error.retryAfter = isrcRes.headers.get('retry-after') || undefined;
+        throw error;
       }
+      const data = await isrcRes.json() as { data?: Array<{ id: string }> };
+      if (data.data?.length) return data.data[0].id;
     }
 
     // 2. Metadata Catalog Search Fallback
@@ -116,8 +122,13 @@ export class AppleMusicAdapter implements MusicAdapter {
     const searchRes = await fetch(`${this.baseUrl}/catalog/${storefront}/search?term=${term}&types=songs&limit=1`, {
       headers: { Authorization: `Bearer ${process.env.APPLE_DEVELOPER_TOKEN}` },
     });
-    if (!searchRes.ok) return null;
-    const searchData = await searchRes.json();
+    if (!searchRes.ok) {
+      const error = new Error(`Apple Music search failed (${searchRes.status})`) as Error & { status: number; retryAfter?: string };
+      error.status = searchRes.status;
+      error.retryAfter = searchRes.headers.get('retry-after') || undefined;
+      throw error;
+    }
+    const searchData = await searchRes.json() as { results?: { songs?: { data?: Array<{ id: string }> } } };
     return searchData.results?.songs?.data?.[0]?.id || null;
   }
 }

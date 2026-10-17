@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { AlertCircle, ArrowLeft, Check, CheckCircle2, Clipboard, Loader2, Music2, Sparkles } from 'lucide-react';
-import { getPlaylist, trackPlaylistVisit } from '../services/api';
+import { getPlaylist, hasPlaylistOwnerKey, rematchApplePlaylist, trackPlaylistVisit } from '../services/api';
 import { currentSpotifyAccessToken, spotifyAuthorizationUrl } from '../services/spotifyAuth';
 import { createSpotifyPlaylist, type SpotifyCreationProgress } from '../services/spotifyPlaylist';
 import { authorizeAppleMusic, createAppleMusicPlaylist, prepareAppleMusic, type AppleCreationProgress } from '../services/appleMusic';
@@ -18,6 +18,7 @@ type PlaylistData = {
   name?: string;
   status?: string;
   sourceService?: string;
+  sourceUrl?: string;
   tracks?: PlaylistTrack[];
   progress?: { completedChunks?: number; totalChunks?: number };
   error?: string;
@@ -32,6 +33,7 @@ export function SmartLink() {
   const [spotifyProgress, setSpotifyProgress] = useState<SpotifyCreationProgress | null>(null);
   const [spotifyPlaylistUrl, setSpotifyPlaylistUrl] = useState('');
   const [appleBusy, setAppleBusy] = useState(false);
+  const [appleRematching, setAppleRematching] = useState(false);
   const [appleSetupReady, setAppleSetupReady] = useState(false);
   const [appleSetupError, setAppleSetupError] = useState('');
   const [appleProgress, setAppleProgress] = useState<AppleCreationProgress | null>(null);
@@ -124,6 +126,9 @@ export function SmartLink() {
       ? track.id
       : track.availability?.apple)
     .filter((trackId): trackId is string => Boolean(trackId));
+  const canRematchApple = isReady
+    && appleTrackIds.length === 0
+    && Boolean(playlist.sourceUrl && hasPlaylistOwnerKey(playlist.sourceUrl));
 
   const copyShareLink = async () => {
     try {
@@ -192,8 +197,37 @@ export function SmartLink() {
     }
   };
 
+  const findAppleMatchesFromDatabase = async () => {
+    if (!id || !playlist.sourceUrl || !canRematchApple || appleRematching) return;
+    setAppleRematching(true);
+    setShareMessage('Searching Apple Music with the ISRC codes saved for this playlist…');
+    try {
+      await rematchApplePlaylist(id, playlist.sourceUrl);
+      setPlaylist((current) => current ? { ...current, status: 'processing' } : current);
+
+      for (let attempt = 0; attempt < 90; attempt++) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        const updated = await getPlaylist(id) as PlaylistData;
+        setPlaylist(updated);
+        if (updated.status === 'failed') throw new Error(updated.error || 'Apple Music matching failed.');
+        if (updated.status === 'ready') {
+          const foundAppleMatch = (updated.tracks || []).some((track) => track.availability?.apple);
+          setShareMessage(foundAppleMatch
+            ? 'Apple Music matches are ready. You can create the playlist now.'
+            : 'No Apple Music catalog matches were found for the saved ISRC codes and track details.');
+          return;
+        }
+      }
+      setShareMessage('Apple Music matching is taking longer than expected. Refresh this page to check its status.');
+    } catch (cause) {
+      setShareMessage(cause instanceof Error ? cause.message : 'Could not match the saved tracks with Apple Music.');
+    } finally {
+      setAppleRematching(false);
+    }
+  };
+
   const selectedPlaylistUrl = selectedProvider === 'spotify' ? spotifyPlaylistUrl : applePlaylistUrl;
-  const selectedProviderBusy = selectedProvider === 'spotify' ? spotifyBusy : appleBusy;
+  const selectedProviderBusy = selectedProvider === 'spotify' ? spotifyBusy : appleBusy || appleRematching;
   const selectedProviderHasMatches = selectedProvider === 'spotify'
     ? spotifyTrackUris.length > 0
     : appleTrackIds.length > 0;
@@ -201,6 +235,10 @@ export function SmartLink() {
   const createSelectedPlaylist = () => {
     if (selectedProvider === 'spotify') void createInSpotify();
     else void createInAppleMusic();
+  };
+  const handleSelectedProviderAction = () => {
+    if (selectedProvider === 'apple' && canRematchApple) void findAppleMatchesFromDatabase();
+    else createSelectedPlaylist();
   };
 
   return (
@@ -238,10 +276,11 @@ export function SmartLink() {
               {selectedPlaylistUrl ? (
                 <a className="button button-primary" href={selectedPlaylistUrl} target="_blank" rel="noreferrer"><Music2 size={15} /> Open in {selectedProviderName}</a>
               ) : (
-                <button type="button" className="button button-primary" onClick={createSelectedPlaylist} disabled={!isReady || !selectedProviderHasMatches || selectedProviderBusy}>
+                <button type="button" className="button button-primary" onClick={handleSelectedProviderAction} disabled={!isReady || (!selectedProviderHasMatches && !canRematchApple) || selectedProviderBusy}>
                   {selectedProviderBusy ? <Loader2 className="spin" size={15} /> : <Music2 size={15} />}
                   {selectedProviderBusy
-                    ? selectedProvider === 'spotify' ? 'Creating in Spotify…' : 'Connecting to Apple Music…'
+                    ? selectedProvider === 'spotify' ? 'Creating in Spotify…' : appleRematching ? 'Finding Apple matches…' : 'Connecting to Apple Music…'
+                    : canRematchApple ? 'Find Apple matches'
                     : !selectedProviderHasMatches && isReady ? `No ${selectedProviderName} matches`
                       : selectedProvider === 'apple' && appleSetupError ? 'Retry Apple Music setup'
                         : `Create in ${selectedProviderName}`}
@@ -253,7 +292,9 @@ export function SmartLink() {
             <p className="share-action-help">Each service will ask you to authorize creating a private playlist with the matched tracks.</p>
             {appleSetupError && <p className="share-action-message" role="status">Apple Music setup: {appleSetupError}</p>}
             {isReady && appleTrackIds.length === 0
-              ? <p className="share-action-message" role="status">No Apple Music track matches are saved for this link. Resubmit the source playlist from the create-link page to run matching again.</p>
+              ? <p className="share-action-message" role="status">{canRematchApple
+                ? 'No Apple Music matches are saved yet. Find Apple matches will check the saved ISRC codes and track details; only the browser that created this link can run it.'
+                : 'No Apple Music track matches are saved for this link.'}</p>
               : isReady && spotifyTrackUris.length === 0
                 ? <p className="share-action-message" role="status">No Spotify track matches are available for this link yet.</p>
               : null}
