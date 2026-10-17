@@ -6,6 +6,7 @@ import { currentSpotifyAccessToken, spotifyAuthorizationUrl } from '../services/
 import { createSpotifyPlaylist, type SpotifyCreationProgress } from '../services/spotifyPlaylist';
 
 type PlaylistTrack = {
+  id?: string;
   title?: string;
   artist?: string;
   durationMs?: number;
@@ -97,7 +98,9 @@ export function SmartLink() {
   const isProcessing = playlist.status === 'processing';
   const isReady = playlist.status === 'ready';
   const spotifyTrackUris = tracks
-    .map((track) => track.availability?.spotify)
+    .map((track) => playlist.sourceService === 'spotify' && track.id?.startsWith('spotify:track:')
+      ? track.id
+      : track.availability?.spotify)
     .filter((uri): uri is string => Boolean(uri));
 
   const copyShareLink = async () => {
