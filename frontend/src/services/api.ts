@@ -37,3 +37,8 @@ export async function getPlaylist(id: string) {
 export async function trackPlaylistVisit(id: string) {
   await apiClient.post(`/api/playlists/${encodeURIComponent(id)}/visit`);
 }
+
+export async function getAppleDeveloperToken(): Promise<string> {
+  const { data } = await apiClient.get<{ developerToken: string }>('/api/apple/developer-token');
+  return data.developerToken;
+}

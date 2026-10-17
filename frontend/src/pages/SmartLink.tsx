@@ -4,6 +4,7 @@ import { AlertCircle, ArrowLeft, Check, CheckCircle2, Clipboard, Loader2, Music2
 import { getPlaylist, trackPlaylistVisit } from '../services/api';
 import { currentSpotifyAccessToken, spotifyAuthorizationUrl } from '../services/spotifyAuth';
 import { createSpotifyPlaylist, type SpotifyCreationProgress } from '../services/spotifyPlaylist';
+import { authorizeAppleMusic, createAppleMusicPlaylist, prepareAppleMusic, type AppleCreationProgress } from '../services/appleMusic';
 
 type PlaylistTrack = {
   id?: string;
@@ -30,6 +31,11 @@ export function SmartLink() {
   const [spotifyBusy, setSpotifyBusy] = useState(false);
   const [spotifyProgress, setSpotifyProgress] = useState<SpotifyCreationProgress | null>(null);
   const [spotifyPlaylistUrl, setSpotifyPlaylistUrl] = useState('');
+  const [appleBusy, setAppleBusy] = useState(false);
+  const [appleSetupReady, setAppleSetupReady] = useState(false);
+  const [appleSetupError, setAppleSetupError] = useState('');
+  const [appleProgress, setAppleProgress] = useState<AppleCreationProgress | null>(null);
+  const [applePlaylistUrl, setApplePlaylistUrl] = useState('');
   const visitTrackedFor = useRef<string | null>(null);
 
   useEffect(() => {
@@ -37,6 +43,16 @@ export function SmartLink() {
     visitTrackedFor.current = id;
     void trackPlaylistVisit(id).catch(() => undefined);
   }, [id]);
+
+  useEffect(() => {
+    let active = true;
+    void prepareAppleMusic().then(() => {
+      if (active) setAppleSetupReady(true);
+    }).catch((cause: unknown) => {
+      if (active) setAppleSetupError(cause instanceof Error ? cause.message : 'Apple Music could not be initialized.');
+    });
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     if (!id) return;
@@ -102,6 +118,11 @@ export function SmartLink() {
       ? track.id
       : track.availability?.spotify)
     .filter((uri): uri is string => Boolean(uri));
+  const appleTrackIds = tracks
+    .map((track) => playlist.sourceService === 'apple' && track.id && !track.id.startsWith('spotify:track:')
+      ? track.id
+      : track.availability?.apple)
+    .filter((trackId): trackId is string => Boolean(trackId));
 
   const copyShareLink = async () => {
     try {
@@ -139,6 +160,37 @@ export function SmartLink() {
     }
   };
 
+  const createInAppleMusic = async () => {
+    if (!isReady || appleTrackIds.length === 0 || appleBusy) return;
+    const approved = window.confirm(`Allow BridgeTunes to create a private Apple Music playlist named “${playlist.name || 'Your playlist'}” and add ${appleTrackIds.length} matched tracks?`);
+    if (!approved) return;
+
+    setAppleBusy(true);
+    setAppleProgress({ stage: 'authorizing' });
+    setAppleSetupError('');
+    let musicKitReady = appleSetupReady;
+    try {
+      const musicUserToken = await authorizeAppleMusic();
+      musicKitReady = true;
+      setAppleSetupReady(true);
+      const appleUrl = await createAppleMusicPlaylist(
+        musicUserToken,
+        playlist.name || 'Your playlist',
+        appleTrackIds,
+        setAppleProgress,
+      );
+      setApplePlaylistUrl(appleUrl);
+      setAppleSetupError('');
+      setShareMessage('Your Apple Music playlist is ready to open.');
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : 'Could not create the Apple Music playlist.';
+      setShareMessage(message);
+      if (!musicKitReady) setAppleSetupError(message);
+    } finally {
+      setAppleBusy(false);
+    }
+  };
+
   return (
     <main className="site-shell share-shell">
       <div className="ambient ambient-gold" aria-hidden="true" />
@@ -169,11 +221,22 @@ export function SmartLink() {
                   {spotifyBusy ? 'Creating playlist…' : 'Create in Spotify'}
                 </button>
               )}
+              {applePlaylistUrl ? (
+                <a className="button button-secondary" href={applePlaylistUrl} target="_blank" rel="noreferrer"><Music2 size={15} /> Open in Apple Music</a>
+              ) : (
+                <button type="button" className="button button-secondary" onClick={() => void createInAppleMusic()} disabled={!isReady || appleTrackIds.length === 0 || appleBusy || (!appleSetupReady && !appleSetupError)}>
+                  {appleBusy ? <Loader2 className="spin" size={15} /> : <Music2 size={15} />}
+                  {appleBusy ? 'Connecting to Apple Music…' : !appleSetupReady && !appleSetupError ? 'Loading Apple Music…' : appleSetupError ? 'Retry Apple Music setup' : 'Create in Apple Music'}
+                </button>
+              )}
             </div>
             {spotifyBusy && spotifyProgress && <SpotifyProgress progress={spotifyProgress} />}
-            {isReady && spotifyTrackUris.length === 0
-              ? <p className="share-action-message" role="status">No Spotify track matches are available for this link yet.</p>
-              : <p className="share-action-help">Spotify will ask you to approve creating a private playlist with the matched tracks.</p>}
+            {appleBusy && appleProgress && <AppleProgress progress={appleProgress} />}
+            <p className="share-action-help">Each service will ask you to authorize creating a private playlist with the matched tracks.</p>
+            {appleSetupError && <p className="share-action-message" role="status">Apple Music setup: {appleSetupError}</p>}
+            {isReady && spotifyTrackUris.length === 0 && appleTrackIds.length === 0
+              ? <p className="share-action-message" role="status">No Spotify or Apple Music track matches are available for this link yet.</p>
+              : null}
             {shareMessage && <p className="share-action-message" role="status">{shareMessage}</p>}
           </div>
         </div>
@@ -234,6 +297,16 @@ function SpotifyProgress({ progress }: { progress: SpotifyCreationProgress }) {
     <p>{label}</p>
     <div className="progress-track" role="progressbar" aria-label="Spotify playlist creation progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
       <span style={{ width: `${percent}%` }} />
+    </div>
+  </div>;
+}
+
+function AppleProgress({ progress }: { progress: AppleCreationProgress }) {
+  const authorizing = progress.stage === 'authorizing';
+  return <div className="spotify-create-progress" aria-live="polite">
+    <p>{authorizing ? 'Waiting for Apple Music authorization…' : 'Creating your private Apple Music playlist…'}</p>
+    <div className="progress-track" role="progressbar" aria-label="Apple Music playlist creation progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={authorizing ? 35 : 75}>
+      <span style={{ width: `${authorizing ? 35 : 75}%` }} />
     </div>
   </div>;
 }
