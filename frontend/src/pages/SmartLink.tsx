@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { AlertCircle, ArrowLeft, Check, CheckCircle2, Loader2, Music2, Sparkles } from 'lucide-react';
-import { getPlaylist } from '../services/api';
+import { AlertCircle, ArrowLeft, Check, CheckCircle2, Clipboard, Loader2, Music2, Sparkles } from 'lucide-react';
+import { getPlaylist, trackPlaylistVisit } from '../services/api';
+import { currentSpotifyAccessToken, spotifyAuthorizationUrl } from '../services/spotifyAuth';
+import { createSpotifyPlaylist, type SpotifyCreationProgress } from '../services/spotifyPlaylist';
 
 type PlaylistTrack = {
   title?: string;
@@ -23,6 +25,17 @@ export function SmartLink() {
   const { id } = useParams<{ id: string }>();
   const [playlist, setPlaylist] = useState<PlaylistData | null>(null);
   const [error, setError] = useState('');
+  const [shareMessage, setShareMessage] = useState('');
+  const [spotifyBusy, setSpotifyBusy] = useState(false);
+  const [spotifyProgress, setSpotifyProgress] = useState<SpotifyCreationProgress | null>(null);
+  const [spotifyPlaylistUrl, setSpotifyPlaylistUrl] = useState('');
+  const visitTrackedFor = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!id || visitTrackedFor.current === id) return;
+    visitTrackedFor.current = id;
+    void trackPlaylistVisit(id).catch(() => undefined);
+  }, [id]);
 
   useEffect(() => {
     if (!id) return;
@@ -83,6 +96,45 @@ export function SmartLink() {
   const progressPercent = totalChunks ? Math.min(100, Math.round((completedChunks / totalChunks) * 100)) : 0;
   const isProcessing = playlist.status === 'processing';
   const isReady = playlist.status === 'ready';
+  const spotifyTrackUris = tracks
+    .map((track) => track.availability?.spotify)
+    .filter((uri): uri is string => Boolean(uri));
+
+  const copyShareLink = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setShareMessage('Link copied. Anyone with it can view this playlist.');
+    } catch {
+      setShareMessage('Could not copy automatically. Copy the page address from your browser.');
+    }
+  };
+
+  const createInSpotify = async () => {
+    if (!isReady || spotifyTrackUris.length === 0 || spotifyBusy) return;
+    const approved = window.confirm(`Allow BridgeTunes to create a private Spotify playlist named “${playlist.name || 'Your playlist'}” and add ${spotifyTrackUris.length} matched tracks?`);
+    if (!approved) return;
+
+    setSpotifyBusy(true);
+    try {
+      const accessToken = currentSpotifyAccessToken(['playlist-modify-private']);
+      if (accessToken) {
+        const spotifyUrl = await createSpotifyPlaylist(accessToken, playlist.name || 'Your playlist', spotifyTrackUris, setSpotifyProgress);
+        setSpotifyPlaylistUrl(spotifyUrl);
+        setShareMessage('Your Spotify playlist is ready to open.');
+        setSpotifyBusy(false);
+        return;
+      }
+      sessionStorage.setItem('bridgetunes-pending-playlist', JSON.stringify({
+        mode: 'create',
+        name: playlist.name || 'Your playlist',
+        trackUris: spotifyTrackUris,
+      }));
+      window.location.assign(await spotifyAuthorizationUrl());
+    } catch (cause) {
+      setShareMessage(cause instanceof Error ? cause.message : 'Could not start Spotify playlist creation.');
+      setSpotifyBusy(false);
+    }
+  };
 
   return (
     <main className="site-shell share-shell">
@@ -104,6 +156,22 @@ export function SmartLink() {
             <h1>{playlist.name || (isReady ? 'Your playlist' : 'Building your playlist link')}</h1>
             <p className="share-subtitle">A little more listening, wherever your people are.</p>
             <div className="share-stats"><span>{tracks.length} tracks</span><span className="stat-divider" /><span>{isReady ? 'Ready to share' : isProcessing ? 'Matching tracks' : 'Import status'}</span></div>
+            <div className="share-actions">
+              <button type="button" className="button button-secondary" onClick={() => void copyShareLink()}><Clipboard size={15} /> Copy link</button>
+              {spotifyPlaylistUrl ? (
+                <a className="button button-primary" href={spotifyPlaylistUrl} target="_blank" rel="noreferrer"><Music2 size={15} /> Open in Spotify</a>
+              ) : (
+                <button type="button" className="button button-primary" onClick={() => void createInSpotify()} disabled={!isReady || spotifyTrackUris.length === 0 || spotifyBusy}>
+                  {spotifyBusy ? <Loader2 className="spin" size={15} /> : <Music2 size={15} />}
+                  {spotifyBusy ? 'Creating playlist…' : 'Create in Spotify'}
+                </button>
+              )}
+            </div>
+            {spotifyBusy && spotifyProgress && <SpotifyProgress progress={spotifyProgress} />}
+            {isReady && spotifyTrackUris.length === 0
+              ? <p className="share-action-message" role="status">No Spotify track matches are available for this link yet.</p>
+              : <p className="share-action-help">Spotify will ask you to approve creating a private playlist with the matched tracks.</p>}
+            {shareMessage && <p className="share-action-message" role="status">{shareMessage}</p>}
           </div>
         </div>
 
@@ -150,6 +218,21 @@ export function SmartLink() {
       </section>
     </main>
   );
+}
+
+function SpotifyProgress({ progress }: { progress: SpotifyCreationProgress }) {
+  const percent = progress.stage === 'creating'
+    ? 8
+    : 10 + Math.round((progress.completed / Math.max(progress.total, 1)) * 90);
+  const label = progress.stage === 'creating'
+    ? 'Creating your private Spotify playlist…'
+    : `Adding matched tracks (${progress.completed} of ${progress.total} batches)…`;
+  return <div className="spotify-create-progress" aria-live="polite">
+    <p>{label}</p>
+    <div className="progress-track" role="progressbar" aria-label="Spotify playlist creation progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
+      <span style={{ width: `${percent}%` }} />
+    </div>
+  </div>;
 }
 
 function AvailabilityTag({ platform, available }: { platform: 'spotify' | 'apple'; available: boolean }) {

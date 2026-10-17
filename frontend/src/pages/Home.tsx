@@ -9,6 +9,7 @@ type Service = 'spotify' | 'apple';
 export function Home() {
   const [url, setUrl] = useState('');
   const [service, setService] = useState<Service>('spotify');
+  const [expiresInDays, setExpiresInDays] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [spotifyAuthPrompt, setSpotifyAuthPrompt] = useState(false);
@@ -23,7 +24,7 @@ export function Home() {
     setSpotifyAuthPrompt(false);
 
     try {
-      const result = await submitPlaylist(url, service, service === 'spotify' ? currentSpotifyAccessToken() : undefined);
+      const result = await submitPlaylist(url, service, service === 'spotify' ? currentSpotifyAccessToken() : undefined, expiresInDays);
       navigate(`/p/${result.playlistId}`);
     } catch (cause: unknown) {
       if (service === 'spotify' && typeof cause === 'object' && cause !== null && 'response' in cause) {
@@ -43,7 +44,7 @@ export function Home() {
     setLoading(true);
     setError('');
     try {
-      sessionStorage.setItem('bridgetunes-pending-playlist', JSON.stringify({ url, service }));
+      sessionStorage.setItem('bridgetunes-pending-playlist', JSON.stringify({ url, service, expiresInDays }));
       window.location.assign(await spotifyAuthorizationUrl());
     } catch (cause: unknown) {
       setError(cause instanceof Error ? cause.message : 'Could not start Spotify sign-in.');
@@ -106,6 +107,20 @@ export function Home() {
             />
             <p className="field-help">We only read the playlist details needed to find your tracks.</p>
 
+            <label className="field-label" htmlFor="link-duration">Link duration (days)</label>
+            <input
+              id="link-duration"
+              className="field-control duration-input"
+              type="number"
+              min={1}
+              max={30}
+              step={1}
+              value={expiresInDays}
+              onChange={(event) => setExpiresInDays(Number(event.target.value))}
+              required
+            />
+            <p className="field-help">Choose 1–30 days. Links last 1 day by default.</p>
+
             {error && <p role="alert" className="notice notice-error">{error}</p>}
 
             {spotifyAuthPrompt && (
@@ -113,7 +128,7 @@ export function Home() {
                 <div className="notice-icon"><Music2 size={17} /></div>
                 <div className="notice-content">
                   <strong>Connect Spotify to continue</strong>
-                  <p>Spotify requires your permission to read this playlist. Use an account that owns it or collaborates on it.</p>
+                  <p>Spotify sign-in is needed to read this playlist. Continue with an account that can access it.</p>
                   <button type="button" onClick={connectSpotify} disabled={loading} className="button button-auth">
                     Continue with Spotify <ArrowRight size={16} />
                   </button>
@@ -122,9 +137,9 @@ export function Home() {
             )}
 
             <button type="submit" className="button button-primary import-submit" disabled={loading}>
-              {loading ? <><Loader2 className="spin" size={18} /> Preparing your link…</> : <>Create your smart link <ArrowRight size={18} /></>}
+              {loading ? <><Loader2 className="spin" size={18} /> Preparing your link…</> : <>Create or update your link <ArrowRight size={18} /></>}
             </button>
-            <div className="privacy-note"><Check size={13} /> Your playlist stays yours. We never change it.</div>
+            <div className="privacy-note"><Check size={13} /> Resubmitting an active Spotify playlist link updates it in place. Only this browser can replace it.</div>
           </form>
         </div>
 
