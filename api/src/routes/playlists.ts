@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import crypto from 'crypto';
-import { SpotifyAdapter } from '@bridgetunes/adapters';
+import { AppleMusicAdapter, SpotifyAdapter } from '@bridgetunes/adapters';
 import type { Track } from '@bridgetunes/adapters';
 import { db } from '../services/firebase.js';
 import { getSpotifyAppToken, getSpotifyPlaylistOwnerId, getSpotifyUserId } from '../services/spotify.js';
@@ -46,6 +46,13 @@ async function queueMatchingTracks(playlistId: string, tracks: Track[], runId = 
 }
 
 export async function playlistRoutes(fastify: FastifyInstance) {
+  fastify.get('/api/apple/developer-token', async (_request, reply) => {
+    const developerToken = process.env.APPLE_DEVELOPER_TOKEN;
+    if (!developerToken) return reply.status(503).send({ error: 'Apple Music is not configured on the API.' });
+    reply.header('Cache-Control', 'no-store');
+    return reply.send({ developerToken });
+  });
+
   fastify.post('/api/playlists', async (request: FastifyRequest<{ Body: { url: string; service: string; expiresInDays?: number } }>, reply) => {
     const { url, service, expiresInDays = 1 } = request.body || {};
     if (typeof url !== 'string' || !url.trim() || !['spotify', 'apple'].includes(service)) {
@@ -162,6 +169,41 @@ export async function playlistRoutes(fastify: FastifyInstance) {
       } catch (error) {
         await playlistRef.update({ status: 'failed', error: 'Could not queue playlist replacement' });
         request.log.error(error, 'Failed to enqueue Spotify playlist replacement');
+        return reply.status(502).send({ error: 'Could not queue playlist replacement' });
+      }
+      return reply.status(202).send({ playlistId, status: 'processing', replaced: true });
+    }
+    if (existing.exists && existingData?.sourceService === 'apple' && existingData?.status !== 'processing') {
+      if (existingData.ownerKeyHash && !isValidOwnerKey(ownerKey, existingData.ownerKeyHash)) {
+        return reply.status(403).send({ error: 'Only the browser that created this link can replace it.' });
+      }
+      const adapter = new AppleMusicAdapter();
+      const parsed = adapter.parseUrl(cleanUrl);
+      if (!parsed) return reply.status(400).send({ error: 'Invalid Apple Music playlist URL' });
+      const developerToken = process.env.APPLE_DEVELOPER_TOKEN;
+      if (!developerToken) return reply.status(503).send({ error: 'Apple Music is not configured on the API.' });
+
+      let updatedTracks: Track[];
+      try {
+        updatedTracks = await adapter.getPlaylistTracks(developerToken, parsed.playlistId);
+      } catch (error) {
+        request.log.error(error, 'Failed to reread Apple Music playlist');
+        return reply.status(502).send({ error: 'Could not reread this Apple Music playlist.' });
+      }
+      if (updatedTracks.length === 0) return reply.status(422).send({ error: 'No tracks were found in this Apple Music playlist.' });
+
+      try {
+        await queueMatchingTracks(playlistId, updatedTracks);
+        await playlistRef.update({
+          error: null,
+          ownerKeyHash: hashOwnerKey(ownerKey).toString('hex'),
+          updatedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString(),
+          expiresInDays,
+        });
+      } catch (error) {
+        await playlistRef.update({ status: 'failed', error: 'Could not queue playlist replacement' });
+        request.log.error(error, 'Failed to enqueue Apple Music playlist replacement');
         return reply.status(502).send({ error: 'Could not queue playlist replacement' });
       }
       return reply.status(202).send({ playlistId, status: 'processing', replaced: true });
