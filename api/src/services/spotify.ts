@@ -8,7 +8,8 @@ export async function getSpotifyAppToken(): Promise<string> {
   if (!clientId || !clientSecret) throw new Error('Spotify app credentials are not configured');
 
   const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
-  const response = await fetch('https://accounts.spotify.com/api/token', {
+  const tokenUrl = process.env.SPOTIFY_TOKEN_URL || 'https://accounts.spotify.com/api/token';
+  const response = await fetch(tokenUrl, {
     method: 'POST',
     headers: {
       Authorization: `Basic ${credentials}`,

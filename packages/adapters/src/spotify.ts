@@ -17,7 +17,7 @@ type SpotifyPlaylistItemsPage = {
 
 export class SpotifyAdapter implements MusicAdapter {
   id = 'spotify' as const;
-  private baseUrl = 'https://api.spotify.com/v1';
+  private baseUrl = (process.env.SPOTIFY_API_BASE_URL || 'https://api.spotify.com/v1').replace(/\/$/, '');
 
   parseUrl(url: string): { playlistId: string } | null {
     try {
