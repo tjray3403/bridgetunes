@@ -2,7 +2,7 @@ import type { MusicAdapter, Playlist, Track } from './types.js';
 
 export class AppleMusicAdapter implements MusicAdapter {
   id = 'apple' as const;
-  private baseUrl = 'https://api.music.apple.com/v1';
+  private baseUrl = (process.env.APPLE_MUSIC_API_BASE_URL || 'https://api.music.apple.com/v1').replace(/\/$/, '');
 
   parseUrl(url: string): { playlistId: string } | null {
     try {

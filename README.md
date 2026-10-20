@@ -36,6 +36,56 @@ BridgeTunes turns a Spotify or Apple Music playlist link into a shareable page s
 
    Open the local site at `http://127.0.0.1:5173` so the PKCE verifier remains available when Spotify redirects back.
 
+## Repeatable local import load test
+
+This harness uses synthetic Spotify and Apple Music catalog responses, the Firestore emulator, and a local direct-to-worker queue path. It does not contact real music providers, QStash, production Firestore, or the deployed BridgeTunes API. Keep `LOCAL_LOAD_TEST=true` confined to this local API process; the API rejects that mode when `NODE_ENV=production`.
+
+1. Install k6 and Firebase CLI (`winget install k6 --source winget`; `npm install --global firebase-tools`).
+2. In PowerShell at the repository root, start the Firestore emulator in one terminal:
+
+   ```powershell
+   npx firebase-tools emulators:start --only firestore --project demo-bridgetunes --config api/firebase.loadtest.json
+   ```
+
+3. In a second terminal, start the fake provider server:
+
+   ```powershell
+   node api/mock_providers.js
+   ```
+
+4. In a third terminal, configure and start the API against those local services:
+
+   ```powershell
+   $env:PORT = "8080"
+   $env:NODE_ENV = "development"
+   $env:LOCAL_LOAD_TEST = "true"
+   $env:FIREBASE_PROJECT_ID = "demo-bridgetunes"
+   $env:FIRESTORE_EMULATOR_HOST = "127.0.0.1:8085"
+   $env:RENDER_EXTERNAL_URL = "http://127.0.0.1:8080"
+   $env:QSTASH_TOKEN = "local-only"
+   $env:SPOTIFY_CLIENT_ID = "mock-client"
+   $env:SPOTIFY_CLIENT_SECRET = "mock-secret"
+   $env:SPOTIFY_TOKEN_URL = "http://127.0.0.1:8090/api/token"
+   $env:SPOTIFY_API_BASE_URL = "http://127.0.0.1:8090/v1"
+   $env:APPLE_DEVELOPER_TOKEN = "mock-apple-token"
+   $env:APPLE_MUSIC_API_BASE_URL = "http://127.0.0.1:8090/v1"
+   $env:UPSTASH_REDIS_REST_URL = ""
+   $env:UPSTASH_REDIS_REST_TOKEN = ""
+   npm --prefix api run build
+   npm --prefix api start
+   ```
+
+5. In a fourth terminal, run five simultaneous imports:
+
+   ```powershell
+   $env:API_URL = "http://127.0.0.1:8080"
+   $env:VUS = "5"
+   $env:RUN_ID = [guid]::NewGuid().ToString("N")
+   k6 run api/loadtest_jobs.js
+   ```
+
+The script submits one unique synthetic playlist per virtual user, then checks that the playlist reached `ready`. The mock provider serves 100 tracks by default; set `MOCK_TRACKS_PER_PLAYLIST` before starting `mock_providers.js` to change that. Increase `VUS` gradually. Use a new `RUN_ID` on each run so imports are first-time writes in the emulator. The mock local queue invokes workers synchronously as part of handling the import request, so request duration includes matching work. This is a repeatable local pipeline benchmark, not a measurement of production hosting capacity or third-party quotas.
+
 ## Deployment setup
 
 ### Render API service

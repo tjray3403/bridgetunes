@@ -25,6 +25,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
   // Middleware/Hook to verify QStash requests
   fastify.addHook('preHandler', async (request, reply) => {
     if (request.url.startsWith('/api/jobs')) {
+      if (process.env.LOCAL_LOAD_TEST === 'true' && process.env.NODE_ENV !== 'production') return;
       const signature = request.headers['upstash-signature'];
       const body = (request as FastifyRequest & { rawBody?: string }).rawBody;
       const workerBaseUrl = process.env.RENDER_EXTERNAL_URL;

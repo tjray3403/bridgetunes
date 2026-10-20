@@ -3,6 +3,17 @@ export async function publishQStashMessage(
   body: unknown,
   deduplicationId: string,
 ): Promise<void> {
+  if (process.env.LOCAL_LOAD_TEST === 'true') {
+    if (process.env.NODE_ENV === 'production') throw new Error('LOCAL_LOAD_TEST cannot be enabled in production');
+    const response = await fetch(destination, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error(`Local load-test worker rejected message (${response.status})`);
+    return;
+  }
+
   const token = process.env.QSTASH_TOKEN;
   if (!token) throw new Error('QStash token is not configured');
 
