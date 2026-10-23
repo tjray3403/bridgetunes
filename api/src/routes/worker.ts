@@ -156,7 +156,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
     const spotifyToken = spotifyEnabledForRun ? await getSpotifyAppToken() : '';
     const appleToken = appleEnabledForRun ? process.env.APPLE_DEVELOPER_TOKEN || '' : '';
     const sourceIsSpotify = playlistData.sourceService === 'spotify';
-    if (appleEnabledForRun && targetService !== 'spotify' && !appleToken) {
+    if (appleEnabledForRun && !appleToken) {
       return reply.status(503).send({ error: 'Apple Music is not configured on the API.' });
     }
 
