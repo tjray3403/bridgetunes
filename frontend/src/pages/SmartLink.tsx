@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { AlertCircle, ArrowLeft, Check, CheckCircle2, Clipboard, Loader2, Music2, Sparkles } from 'lucide-react';
-import { getPlaylist, hasPlaylistOwnerKey, rematchApplePlaylist, trackPlaylistVisit } from '../services/api';
+import { getMusicFeatureFlags, getPlaylist, hasPlaylistOwnerKey, rematchApplePlaylist, trackPlaylistVisit } from '../services/api';
 import { currentSpotifyAccessToken, spotifyAuthorizationUrl } from '../services/spotifyAuth';
 import { createSpotifyPlaylist, type SpotifyCreationProgress } from '../services/spotifyPlaylist';
 import { authorizeAppleMusic, createAppleMusicPlaylist, prepareAppleMusic, type AppleCreationProgress } from '../services/appleMusic';
@@ -39,6 +39,7 @@ export function SmartLink() {
   const [appleProgress, setAppleProgress] = useState<AppleCreationProgress | null>(null);
   const [applePlaylistUrl, setApplePlaylistUrl] = useState('');
   const [selectedProvider, setSelectedProvider] = useState<'spotify' | 'apple'>('spotify');
+  const [features, setFeatures] = useState({ spotify: true, appleMusic: true });
   const visitTrackedFor = useRef<string | null>(null);
 
   useEffect(() => {
@@ -59,14 +60,26 @@ export function SmartLink() {
   }, [id]);
 
   useEffect(() => {
+    void getMusicFeatureFlags().then((nextFeatures) => {
+      setFeatures(nextFeatures);
+      if (!nextFeatures.spotify && nextFeatures.appleMusic) setSelectedProvider('apple');
+    });
+  }, []);
+
+  useEffect(() => {
     let active = true;
+    if (!features.appleMusic) {
+      setAppleSetupReady(false);
+      setAppleSetupError('');
+      return () => { active = false; };
+    }
     void prepareAppleMusic().then(() => {
       if (active) setAppleSetupReady(true);
     }).catch((cause: unknown) => {
       if (active) setAppleSetupError(cause instanceof Error ? cause.message : 'Apple Music could not be initialized.');
     });
     return () => { active = false; };
-  }, []);
+  }, [features.appleMusic]);
 
   useEffect(() => {
     if (!id) return;
@@ -274,8 +287,8 @@ export function SmartLink() {
             <div className="share-stats"><span>{tracks.length} tracks</span><span className="stat-divider" /><span>{isReady ? 'Ready to share' : isProcessing ? 'Matching tracks' : 'Import status'}</span></div>
             <div className="share-actions">
               <button type="button" className="button button-secondary" onClick={() => void copyShareLink()}><Clipboard size={15} /> Copy link</button>
-              <label className="visually-hidden" htmlFor="playlist-destination">Choose a music service</label>
-              <select
+              {features.spotify && features.appleMusic && <label className="visually-hidden" htmlFor="playlist-destination">Choose a music service</label>}
+              {features.spotify && features.appleMusic && <select
                 id="playlist-destination"
                 className="button button-secondary provider-select"
                 value={selectedProvider}
@@ -283,8 +296,9 @@ export function SmartLink() {
               >
                 <option value="spotify">Spotify</option>
                 <option value="apple">Apple Music</option>
-              </select>
-              {selectedPlaylistUrl ? (
+              </select>}
+              {!features.spotify && !features.appleMusic ? <span className="share-action-message">Playlist transfers are temporarily unavailable.</span> : null}
+              {features.spotify || features.appleMusic ? selectedPlaylistUrl ? (
                 <a className="button button-primary" href={selectedPlaylistUrl} target="_blank" rel="noreferrer"><Music2 size={15} /> Open in {selectedProviderName}</a>
               ) : (
                 <button type="button" className="button button-primary" onClick={handleSelectedProviderAction} disabled={!isReady || (!selectedProviderHasMatches && !canRematchApple) || selectedProviderBusy}>
@@ -296,17 +310,17 @@ export function SmartLink() {
                       : selectedProvider === 'apple' && appleSetupError ? 'Retry Apple Music setup'
                         : `Create in ${selectedProviderName}`}
                 </button>
-              )}
+              ) : null}
             </div>
             {spotifyBusy && spotifyProgress && <SpotifyProgress progress={spotifyProgress} />}
             {appleBusy && appleProgress && <AppleProgress progress={appleProgress} />}
-            <p className="share-action-help">Each service will ask you to authorize creating a private playlist with the matched tracks.</p>
+            {(features.spotify || features.appleMusic) && <p className="share-action-help">Each service will ask you to authorize creating a private playlist with the matched tracks.</p>}
             {appleSetupError && <p className="share-action-message" role="status">Apple Music setup: {appleSetupError}</p>}
-            {isReady && appleTrackIds.length === 0
+            {features.appleMusic && isReady && appleTrackIds.length === 0
               ? <p className="share-action-message" role="status">{canRematchApple
                 ? 'No Apple Music matches are saved yet. Find Apple matches will check the saved ISRC codes and track details; only the browser that created this link can run it.'
                 : 'No Apple Music track matches are saved for this link.'}</p>
-              : isReady && spotifyTrackUris.length === 0
+              : features.spotify && isReady && spotifyTrackUris.length === 0
                 ? <p className="share-action-message" role="status">No Spotify track matches are available for this link yet.</p>
               : null}
             {shareMessage && <p className="share-action-message" role="status">{shareMessage}</p>}
@@ -322,8 +336,8 @@ export function SmartLink() {
             </span>
           </div>
           <div className="provider-legend">
-            <span><i className="legend-dot legend-spotify" /> Spotify</span>
-            <span><i className="legend-dot legend-apple" /> Apple Music</span>
+            {features.spotify && <span><i className="legend-dot legend-spotify" /> Spotify</span>}
+            {features.appleMusic && <span><i className="legend-dot legend-apple" /> Apple Music</span>}
             {isProcessing && <span className="match-progress-text">{progressPercent}% matched</span>}
           </div>
           {isProcessing && <div className="progress-track"><span style={{ width: `${progressPercent}%` }} /></div>}

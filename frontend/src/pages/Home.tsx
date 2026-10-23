@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ArrowDown, ArrowRight, Check, Loader2, Music2, Sparkles } from 'lucide-react';
-import { submitPlaylist } from '../services/api';
+import { getMusicFeatureFlags, submitPlaylist } from '../services/api';
 import { currentSpotifyAccessToken, spotifyAuthorizationUrl } from '../services/spotifyAuth';
 
 type Service = 'spotify' | 'apple';
@@ -13,7 +13,10 @@ export function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [spotifyAuthPrompt, setSpotifyAuthPrompt] = useState(false);
+  const [features, setFeatures] = useState({ spotify: true, appleMusic: true });
   const navigate = useNavigate();
+
+  useEffect(() => { void getMusicFeatureFlags().then(setFeatures); }, []);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -21,6 +24,10 @@ export function Home() {
     const service = detectService(url);
     if (!service) {
       setError('Paste a Spotify or Apple Music playlist link.');
+      return;
+    }
+    if ((service === 'spotify' && !features.spotify) || (service === 'apple' && !features.appleMusic)) {
+      setError(`${service === 'spotify' ? 'Spotify' : 'Apple Music'} is temporarily unavailable.`);
       return;
     }
     const expirationHours = Number(expiresInHours);
@@ -87,8 +94,8 @@ export function Home() {
           <p className="hero-copy">See where the songs are available, then share one simple link with everyone.</p>
 
           <div className="service-legend" aria-label="Supported music services">
-            <span className="service-pill service-pill-spotify"><span className="service-dot" /> Spotify</span>
-            <span className="service-pill service-pill-apple"><span className="service-dot" /> Apple Music</span>
+            {features.spotify && <span className="service-pill service-pill-spotify"><span className="service-dot" /> Spotify</span>}
+            {features.appleMusic && <span className="service-pill service-pill-apple"><span className="service-dot" /> Apple Music</span>}
           </div>
 
           <form className="import-card" onSubmit={handleSubmit}>
@@ -105,13 +112,13 @@ export function Home() {
               id="playlist-url"
               className="field-control url-input"
               type="url"
-              placeholder="Spotify or Apple Music playlist link"
+              placeholder={features.spotify && features.appleMusic ? 'Spotify or Apple Music playlist link' : features.spotify ? 'Spotify playlist link' : features.appleMusic ? 'Apple Music playlist link' : 'Playlist imports are temporarily unavailable'}
               value={url}
               onChange={(event) => setUrl(event.target.value)}
               required
               autoComplete="url"
             />
-            <p className="field-help">Spotify or Apple Music is detected from the link. We only read the playlist details needed to find your tracks.</p>
+            <p className="field-help">{features.spotify && features.appleMusic ? 'Spotify or Apple Music is detected from the link.' : features.spotify ? 'Spotify is detected from the link.' : features.appleMusic ? 'Apple Music is detected from the link.' : 'Playlist imports are temporarily unavailable.'} We only read the playlist details needed to find your tracks.</p>
 
             <label className="field-label" htmlFor="playlist-name">Playlist name (optional)</label>
             <input
@@ -154,7 +161,7 @@ export function Home() {
               </div>
             )}
 
-            <button type="submit" className="button button-primary import-submit" disabled={loading}>
+            <button type="submit" className="button button-primary import-submit" disabled={loading || (!features.spotify && !features.appleMusic)}>
               {loading ? <><Loader2 className="spin" size={18} /> Preparing your link…</> : <>Create or update your link <ArrowRight size={18} /></>}
             </button>
             <div className="privacy-note"><Check size={13} /> Resubmitting an active playlist link updates it in place. Only this browser can replace it.</div>

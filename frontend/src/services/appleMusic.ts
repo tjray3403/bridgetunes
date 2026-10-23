@@ -1,4 +1,4 @@
-import { getAppleDeveloperToken } from './api';
+import { getAppleDeveloperToken, refreshMusicFeatureFlags } from './api';
 
 type AppleMusicInstance = {
   authorize(): Promise<string>;
@@ -68,6 +68,8 @@ export async function createAppleMusicPlaylist(
   catalogSongIds: string[],
   onProgress?: (progress: AppleCreationProgress) => void,
 ): Promise<string> {
+  const features = await refreshMusicFeatureFlags();
+  if (!features.appleMusic) throw new Error('Apple Music is temporarily unavailable. Please try again later.');
   if (!developerToken) throw new Error('Apple Music is not ready. Please try again.');
   if (catalogSongIds.length === 0) throw new Error('There are no Apple Music matches to add.');
 
