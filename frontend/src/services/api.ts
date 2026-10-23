@@ -7,6 +7,25 @@ const apiClient = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+export type MusicFeatureFlags = { spotify: boolean; appleMusic: boolean };
+const defaultMusicFeatureFlags: MusicFeatureFlags = { spotify: true, appleMusic: true };
+let musicFeatureFlagsRequest: Promise<MusicFeatureFlags> | undefined;
+
+export function getMusicFeatureFlags(): Promise<MusicFeatureFlags> {
+  musicFeatureFlagsRequest ??= requestMusicFeatureFlags()
+    .catch(() => defaultMusicFeatureFlags);
+  return musicFeatureFlagsRequest;
+}
+
+export async function refreshMusicFeatureFlags(): Promise<MusicFeatureFlags> {
+  return requestMusicFeatureFlags();
+}
+
+async function requestMusicFeatureFlags(): Promise<MusicFeatureFlags> {
+  const { data } = await apiClient.get<MusicFeatureFlags>('/api/features');
+  return { spotify: data.spotify !== false, appleMusic: data.appleMusic !== false };
+}
+
 function ownerKeyForPlaylist(url: string): string {
   const storageKey = `bridgetunes-owner-key:${url.trim()}`;
   let ownerKey = localStorage.getItem(storageKey);

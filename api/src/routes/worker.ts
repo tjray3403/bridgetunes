@@ -1,7 +1,10 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
+import crypto from 'node:crypto';
+import type { DocumentReference } from 'firebase-admin/firestore';
 import { Receiver } from '@upstash/qstash';
 import { db } from '../services/firebase.js';
 import { getSpotifyAppToken } from '../services/spotify.js';
+import { getMusicFeatureFlags } from '../services/features.js';
 import { publishQStashMessage } from '../services/qstash.js';
 import {
   cacheTrackMatches,
@@ -15,6 +18,12 @@ import {
   type TrackMatchRecord,
 } from '../services/cache.js';
 import { SpotifyAdapter, AppleMusicAdapter } from '@bridgetunes/adapters';
+
+async function isCurrentProcessingRun(playlistRef: DocumentReference, runId: string): Promise<boolean> {
+  const snapshot = await playlistRef.get();
+  const playlist = snapshot.data();
+  return snapshot.exists && playlist?.processingRunId === runId && playlist?.status === 'processing';
+}
 
 const receiver = new Receiver({
   currentSigningKey: process.env.QSTASH_CURRENT_SIGNING_KEY || '',
@@ -57,6 +66,11 @@ export async function workerRoutes(fastify: FastifyInstance) {
       await db.collection('playlists').doc(playlistId).update({ status: 'failed', error: 'Unsupported music service' });
       return reply.status(400).send({ error: 'Unsupported music service' });
     }
+    const features = getMusicFeatureFlags();
+    if ((service === 'spotify' && !features.spotify) || (service === 'apple' && !features.appleMusic)) {
+      await db.collection('playlists').doc(playlistId).update({ status: 'failed', error: `${service === 'spotify' ? 'Spotify' : 'Apple Music'} is temporarily disabled.` });
+      return reply.send({ success: false, disabled: true });
+    }
     const adapter = service === 'spotify' ? new SpotifyAdapter() : new AppleMusicAdapter();
     const parsed = adapter.parseUrl(cleanUrl);
 
@@ -75,6 +89,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
       // Chunk tracks into groups of 25 to respect free-tier CPU/memory constraints
       const chunkSize = 25;
       const chunkCount = Math.ceil(rawTracks.length / chunkSize);
+      const runId = crypto.randomUUID();
 
       // Update total chunks in Firestore
       await db.collection('playlists').doc(playlistId).update({
@@ -82,6 +97,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
         completedChunkIndexes: [],
         'progress.completedChunks': 0,
         'progress.totalChunks': chunkCount,
+        processingRunId: runId,
         tracks: rawTracks.map((t, idx) => ({ ...t, position: idx, availability: {} })),
       });
 
@@ -98,8 +114,9 @@ export async function workerRoutes(fastify: FastifyInstance) {
       for (let i = 0; i < chunkCount; i++) {
         await publishQStashMessage(
           `${workerBaseUrl}/api/jobs/match-chunk`,
-          { playlistId, chunkIndex: i },
-          `match-${playlistId}-${i}`,
+          { playlistId, chunkIndex: i, runId },
+          `match-${playlistId}-${runId}-${i}`,
+          `match-${playlistId}-${runId}`,
         );
       }
 
@@ -111,7 +128,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
   });
 
   // Worker 2: Match chunk tracks against target platforms
-  fastify.post('/api/jobs/match-chunk', async (request: FastifyRequest<{ Body: { playlistId: string; chunkIndex: number; runId?: string; targetService?: 'apple' | 'spotify'; tracks?: any[] } }>, reply) => {
+  fastify.post('/api/jobs/match-chunk', async (request: FastifyRequest<{ Body: { playlistId: string; chunkIndex: number; runId: string; targetService?: 'apple' | 'spotify'; tracks?: any[] } }>, reply) => {
     const { playlistId, chunkIndex, runId, targetService } = request.body;
 
     const playlistRef = db.collection('playlists').doc(playlistId);
@@ -119,7 +136,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
     if (!doc.exists) return reply.send({ success: false });
 
     const playlistData = doc.data()!;
-    if (runId && playlistData.processingRunId !== runId) return reply.send({ success: true, stale: true });
+    if (!runId || playlistData.processingRunId !== runId) return reply.send({ success: true, stale: true });
     const completedChunkIndexes: number[] = playlistData.completedChunkIndexes || [];
     if (completedChunkIndexes.includes(chunkIndex)) return reply.send({ success: true, duplicate: true });
 
@@ -131,12 +148,15 @@ export async function workerRoutes(fastify: FastifyInstance) {
 
     // Load the whole chunk's hot match cache with one Redis MGET. Firestore remains
     // the durable cache and is consulted only for ISRCs Redis did not have.
+    const features = getMusicFeatureFlags();
+    const spotifyEnabledForRun = features.spotify && targetService !== 'apple';
+    const appleEnabledForRun = features.appleMusic && targetService !== 'spotify';
     const spotifyAdapter = new SpotifyAdapter();
     const appleAdapter = new AppleMusicAdapter();
-    const spotifyToken = targetService === 'apple' ? '' : await getSpotifyAppToken();
-    const appleToken = process.env.APPLE_DEVELOPER_TOKEN || '';
+    const spotifyToken = spotifyEnabledForRun ? await getSpotifyAppToken() : '';
+    const appleToken = appleEnabledForRun ? process.env.APPLE_DEVELOPER_TOKEN || '' : '';
     const sourceIsSpotify = playlistData.sourceService === 'spotify';
-    if (targetService !== 'spotify' && !appleToken) {
+    if (appleEnabledForRun && targetService !== 'spotify' && !appleToken) {
       return reply.status(503).send({ error: 'Apple Music is not configured on the API.' });
     }
 
@@ -175,6 +195,9 @@ export async function workerRoutes(fastify: FastifyInstance) {
     const trackWrites = db.batch();
     const resolvedTracks = [] as Array<{ position: number; availability: { spotify: string | null; apple: string | null } }>;
     for (const [offset, track] of tracks.entries()) {
+      if (!(await isCurrentProcessingRun(playlistRef, runId))) {
+        return reply.send({ success: true, stale: true });
+      }
       const position = chunkIndex * 25 + offset;
       const isrc = normalizeIsrc(track.isrc);
       const record = isrc ? (matchRecords.get(isrc) || { matches: {} }) : undefined;
@@ -197,7 +220,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
         recordChanged = true;
       };
 
-      if (targetService !== 'apple') {
+    if (spotifyEnabledForRun) {
         if (sourceIsSpotify && typeof track.id === 'string' && track.id.startsWith('spotify:track:')) {
           availability.spotify = track.id;
           saveMatch('spotify', track.id);
@@ -220,7 +243,10 @@ export async function workerRoutes(fastify: FastifyInstance) {
         }
       }
 
-      if (targetService !== 'spotify' && appleToken) {
+      if (appleEnabledForRun && appleToken) {
+        if (!(await isCurrentProcessingRun(playlistRef, runId))) {
+          return reply.send({ success: true, stale: true });
+        }
         const cached = findCached('apple');
         if (isReusable(cached)) availability.apple = cached!.id;
         else {
@@ -255,7 +281,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
 
     for (const [offset, track] of tracks.entries()) {
       const position = chunkIndex * 25 + offset;
-      if (sourceIsSpotify && targetService === 'apple' && typeof track.id === 'string' && track.id.startsWith('spotify:track:')) {
+      if (features.spotify && sourceIsSpotify && targetService === 'apple' && typeof track.id === 'string' && track.id.startsWith('spotify:track:')) {
         resolvedTracks[offset].availability.spotify = track.id;
       }
     }
@@ -263,7 +289,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
     const result = await db.runTransaction(async (transaction) => {
       const latestDoc = await transaction.get(playlistRef);
       const latest = latestDoc.data()!;
-      if (runId && latest.processingRunId !== runId) {
+      if (latest.processingRunId !== runId) {
         return { completedChunks: latest.progress?.completedChunks || 0, stale: true };
       }
       const completedIndexes: number[] = latest.completedChunkIndexes || [];

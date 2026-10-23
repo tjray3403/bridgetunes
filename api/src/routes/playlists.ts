@@ -3,8 +3,9 @@ import crypto from 'crypto';
 import { AppleMusicAdapter, SpotifyAdapter } from '@bridgetunes/adapters';
 import type { Track } from '@bridgetunes/adapters';
 import { db } from '../services/firebase.js';
-import { getSpotifyAppToken, getSpotifyPlaylistOwnerId, getSpotifyUserId } from '../services/spotify.js';
-import { publishQStashMessage } from '../services/qstash.js';
+import { getSpotifyAppToken } from '../services/spotify.js';
+import { getMusicFeatureFlags } from '../services/features.js';
+import { cancelPlaylistRun, publishQStashMessage } from '../services/qstash.js';
 import { cacheReadyPlaylist, getCachedPlaylist, getPlaylistCacheVersion, getProgressCount, invalidatePlaylistCache, resetPlaylistProgress } from '../services/cache.js';
 
 const chunkSize = 25;
@@ -20,12 +21,13 @@ function isValidOwnerKey(candidate: string | undefined, storedHash: string | und
   return candidateHash.length === expectedHash.length && crypto.timingSafeEqual(candidateHash, expectedHash);
 }
 
-async function queueMatchingTracks(playlistId: string, tracks: Track[], runId = crypto.randomUUID()): Promise<void> {
+async function queueMatchingTracks(playlistId: string, tracks: Track[], previousRunId?: string): Promise<void> {
   const qstashToken = process.env.QSTASH_TOKEN;
   const workerBaseUrl = process.env.RENDER_EXTERNAL_URL;
   if (!qstashToken || !workerBaseUrl) throw new Error('Background job service is not configured');
 
   const playlistRef = db.collection('playlists').doc(playlistId);
+  const runId = crypto.randomUUID();
   await Promise.all([invalidatePlaylistCache(playlistId), resetPlaylistProgress(playlistId)]);
   const chunks: Track[][] = [];
   for (let i = 0; i < tracks.length; i += chunkSize) chunks.push(tracks.slice(i, i + chunkSize));
@@ -38,11 +40,23 @@ async function queueMatchingTracks(playlistId: string, tracks: Track[], runId = 
     tracks: tracks.map((track, position) => ({ ...track, position, availability: {} })),
   });
 
+  if (previousRunId) {
+    try {
+      const cancelled = await cancelPlaylistRun(playlistId, previousRunId);
+      console.info(JSON.stringify({ event: 'playlist_matching_run_cancelled', playlistId, previousRunId, cancelled }));
+    } catch (error) {
+      // The new processingRunId already makes old deliveries stale; cancellation
+      // removes queued retries when QStash is reachable.
+      console.warn('Could not cancel queued messages for the previous playlist run.', error);
+    }
+  }
+
   for (let i = 0; i < chunks.length; i++) {
     await publishQStashMessage(
       `${workerBaseUrl}/api/jobs/match-chunk`,
       { playlistId, chunkIndex: i, runId },
       `match-${playlistId}-${runId}-${i}`,
+      `match-${playlistId}-${runId}`,
     );
   }
 }
@@ -76,12 +90,19 @@ async function queueAppleRematch(playlistId: string, tracks: Track[]): Promise<v
       `${workerBaseUrl}/api/jobs/match-chunk`,
       { playlistId, chunkIndex: i, runId, targetService: 'apple' },
       `match-${playlistId}-${runId}-${i}`,
+      `match-${playlistId}-${runId}`,
     );
   }
 }
 
 export async function playlistRoutes(fastify: FastifyInstance) {
+  fastify.get('/api/features', async (_request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    return reply.send(getMusicFeatureFlags());
+  });
+
   fastify.get('/api/apple/developer-token', async (_request, reply) => {
+    if (!getMusicFeatureFlags().appleMusic) return reply.status(503).send({ error: 'Apple Music is temporarily disabled.' });
     const developerToken = process.env.APPLE_DEVELOPER_TOKEN;
     if (!developerToken) return reply.status(503).send({ error: 'Apple Music is not configured on the API.' });
     reply.header('Cache-Control', 'no-store');
@@ -99,6 +120,9 @@ export async function playlistRoutes(fastify: FastifyInstance) {
     if (typeof url !== 'string' || !url.trim() || !['spotify', 'apple'].includes(service)) {
       return reply.status(400).send({ error: 'Missing url or service' });
     }
+    const features = getMusicFeatureFlags();
+    if (service === 'spotify' && !features.spotify) return reply.status(503).send({ error: 'Spotify is temporarily disabled.' });
+    if (service === 'apple' && !features.appleMusic) return reply.status(503).send({ error: 'Apple Music is temporarily disabled.' });
     if (!Number.isInteger(expiresInHours) || expiresInHours < 1 || expiresInHours > 720) {
       return reply.status(400).send({ error: 'Link duration must be between 1 and 720 hours.' });
     }
@@ -133,22 +157,11 @@ export async function playlistRoutes(fastify: FastifyInstance) {
       existing = await playlistRef.get();
       existingData = existing.data();
     }
-    if (existing.exists && existingData?.status === 'processing') {
-      if (!isValidOwnerKey(ownerKey, existingData.ownerKeyHash)) {
-        return reply.status(403).send({ error: 'Only the browser that created this link can replace it.' });
-      }
-      return reply.status(202).send({ playlistId, status: 'processing' });
-    }
-    if (existing.exists && existingData?.sourceService === 'spotify' && existingData?.status !== 'processing') {
+    if (existing.exists && existingData?.sourceService === 'spotify') {
       if (existingData.sourceService !== service) {
         return reply.status(409).send({ error: 'This playlist link already exists under a different source service.' });
       }
       if (service !== 'spotify') return reply.status(409).send({ error: 'This link was created from a Spotify playlist.' });
-
-      const hasOwnerKey = isValidOwnerKey(ownerKey, existingData.ownerKeyHash);
-      if (existingData.ownerKeyHash && !hasOwnerKey) {
-        return reply.status(403).send({ error: 'Only the browser that created this link can replace it.' });
-      }
 
       const authorization = request.headers.authorization;
       const userToken = authorization?.startsWith('Bearer ') ? authorization.slice(7) : undefined;
@@ -156,32 +169,6 @@ export async function playlistRoutes(fastify: FastifyInstance) {
       const adapter = new SpotifyAdapter();
       const parsed = adapter.parseUrl(cleanUrl);
       if (!parsed) return reply.status(400).send({ error: 'Invalid Spotify playlist URL' });
-
-      if (!hasOwnerKey) {
-        if (!userToken) return reply.status(401).send({ authRequired: true });
-        let spotifyUserId: string;
-        try {
-          spotifyUserId = await getSpotifyUserId(userToken);
-        } catch (error) {
-          const status = (error as Error & { status?: number }).status;
-          if (status === 401 || status === 403) return reply.status(401).send({ authRequired: true });
-          request.log.error(error, 'Failed to verify Spotify account for a legacy link');
-          return reply.status(502).send({ error: 'Could not verify access to this older playlist link.' });
-        }
-
-        let ownerId: string;
-        try {
-          ownerId = await getSpotifyPlaylistOwnerId(userToken, parsed.playlistId);
-        } catch (error) {
-          const status = (error as Error & { status?: number }).status;
-          if (status === 401) return reply.status(401).send({ authRequired: true });
-          request.log.error(error, 'Failed to check Spotify playlist ownership for a legacy link');
-          return reply.status(status === 403 ? 403 : 502).send({ error: 'Could not verify access to this older playlist link.' });
-        }
-        if (spotifyUserId !== ownerId) {
-          return reply.status(403).send({ error: 'Only the Spotify playlist owner can replace this older BridgeTunes link.' });
-        }
-      }
 
       let updatedTracks: Track[];
       let updatedPlaylistName = nameOverride || existingData.name || 'Your playlist';
@@ -208,11 +195,14 @@ export async function playlistRoutes(fastify: FastifyInstance) {
       if (updatedTracks.length === 0) return reply.status(422).send({ error: 'No tracks were found in this Spotify playlist.' });
 
       try {
-        await queueMatchingTracks(playlistId, updatedTracks);
+        await queueMatchingTracks(
+          playlistId,
+          updatedTracks,
+          existingData.status === 'processing' ? existingData.processingRunId : undefined,
+        );
         await playlistRef.update({
           error: null,
           name: updatedPlaylistName,
-          ownerKeyHash: hashOwnerKey(ownerKey).toString('hex'),
           updatedAt: new Date().toISOString(),
           expiresAt: new Date(Date.now() + expiresInHours * 60 * 60 * 1000).toISOString(),
           expiresInHours,
@@ -224,10 +214,7 @@ export async function playlistRoutes(fastify: FastifyInstance) {
       }
       return reply.status(202).send({ playlistId, status: 'processing', replaced: true });
     }
-    if (existing.exists && existingData?.sourceService === 'apple' && existingData?.status !== 'processing') {
-      if (existingData.ownerKeyHash && !isValidOwnerKey(ownerKey, existingData.ownerKeyHash)) {
-        return reply.status(403).send({ error: 'Only the browser that created this link can replace it.' });
-      }
+    if (existing.exists && existingData?.sourceService === 'apple') {
       const adapter = new AppleMusicAdapter();
       const parsed = adapter.parseUrl(cleanUrl);
       if (!parsed) return reply.status(400).send({ error: 'Invalid Apple Music playlist URL' });
@@ -253,11 +240,14 @@ export async function playlistRoutes(fastify: FastifyInstance) {
       if (updatedTracks.length === 0) return reply.status(422).send({ error: 'No tracks were found in this Apple Music playlist.' });
 
       try {
-        await queueMatchingTracks(playlistId, updatedTracks);
+        await queueMatchingTracks(
+          playlistId,
+          updatedTracks,
+          existingData.status === 'processing' ? existingData.processingRunId : undefined,
+        );
         await playlistRef.update({
           error: null,
           name: updatedPlaylistName,
-          ownerKeyHash: hashOwnerKey(ownerKey).toString('hex'),
           updatedAt: new Date().toISOString(),
           expiresAt: new Date(Date.now() + expiresInHours * 60 * 60 * 1000).toISOString(),
           expiresInHours,
@@ -410,6 +400,7 @@ export async function playlistRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post('/api/playlists/:id/rematch/apple', async (request: FastifyRequest<{ Params: { id: string } }>, reply) => {
+    if (!getMusicFeatureFlags().appleMusic) return reply.status(503).send({ error: 'Apple Music is temporarily disabled.' });
     const playlistRef = db.collection('playlists').doc(request.params.id);
     const snapshot = await playlistRef.get();
     if (!snapshot.exists) return reply.status(404).send({ error: 'Playlist not found' });

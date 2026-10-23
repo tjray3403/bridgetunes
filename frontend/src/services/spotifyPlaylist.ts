@@ -1,3 +1,5 @@
+import { refreshMusicFeatureFlags } from './api';
+
 type SpotifyPlaylistResponse = { id: string; external_urls?: { spotify?: string } };
 export type SpotifyCreationProgress = { stage: 'creating' | 'adding'; completed: number; total: number };
 
@@ -7,6 +9,8 @@ export async function createSpotifyPlaylist(
   trackUris: string[],
   onProgress?: (progress: SpotifyCreationProgress) => void,
 ): Promise<string> {
+  const features = await refreshMusicFeatureFlags();
+  if (!features.spotify) throw new Error('Spotify is temporarily unavailable. Please try again later.');
   const headers = {
     Authorization: `Bearer ${accessToken}`,
     'Content-Type': 'application/json',

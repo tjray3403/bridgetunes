@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { submitPlaylist } from '../services/api';
+import { refreshMusicFeatureFlags, submitPlaylist } from '../services/api';
 import { completeSpotifyAuthorization } from '../services/spotifyAuth';
 import { createSpotifyPlaylist, type SpotifyCreationProgress } from '../services/spotifyPlaylist';
 import { ArrowLeft, CheckCircle2, Loader2, Music2 } from 'lucide-react';
@@ -21,6 +21,8 @@ export function SpotifyCallback() {
     started.current = true;
 
     const finish = async () => {
+      const features = await refreshMusicFeatureFlags();
+      if (!features.spotify) throw new Error('Spotify is temporarily unavailable. Please try again later.');
       const params = new URLSearchParams(window.location.search);
       if (params.has('error')) throw new Error('Spotify sign-in was cancelled or denied.');
       const code = params.get('code');
