@@ -1,5 +1,20 @@
 import type { MusicAdapter, Playlist, Track } from './types.js';
 
+type ApplePlaylistTracksPage = {
+  data?: Array<{
+    id: string;
+    type?: string;
+    attributes?: {
+      name?: string;
+      artistName?: string;
+      albumName?: string;
+      durationInMillis?: number;
+      isrc?: string;
+    };
+  }>;
+  next?: string;
+};
+
 export class AppleMusicAdapter implements MusicAdapter {
   id = 'apple' as const;
   private baseUrl = (process.env.APPLE_MUSIC_API_BASE_URL || 'https://api.music.apple.com/v1').replace(/\/$/, '');
@@ -44,20 +59,35 @@ export class AppleMusicAdapter implements MusicAdapter {
   }
 
   async getPlaylistTracks(_userToken: string, playlistId: string): Promise<Track[]> {
-    const res = await fetch(`${this.baseUrl}/catalog/us/playlists/${playlistId}/tracks`, {
-      headers: { Authorization: `Bearer ${process.env.APPLE_DEVELOPER_TOKEN}` },
-    });
-    if (!res.ok) throw new Error(`Apple Music API error: ${res.statusText}`);
-    const data = await res.json();
+    const tracks: Track[] = [];
+    let nextUrl: string | null = `${this.baseUrl}/catalog/us/playlists/${encodeURIComponent(playlistId)}/tracks`;
 
-    return data.data.map((track: any) => ({
-      id: track.id,
-      title: track.attributes.name,
-      artist: track.attributes.artistName,
-      album: track.attributes.albumName,
-      durationMs: track.attributes.durationInMillis,
-      isrc: track.attributes.isrc,
-    }));
+    while (nextUrl) {
+      const res = await fetch(nextUrl, {
+        headers: { Authorization: `Bearer ${process.env.APPLE_DEVELOPER_TOKEN}` },
+      });
+      if (!res.ok) {
+        const details = await res.text();
+        throw new Error(`Apple Music API error (${res.status}): ${details || res.statusText}`);
+      }
+      const page = await res.json() as ApplePlaylistTracksPage;
+      for (const track of page.data || []) {
+        if (track.type && track.type !== 'songs') continue;
+        const attributes = track.attributes;
+        if (!attributes?.name || !attributes.artistName) continue;
+        tracks.push({
+          id: track.id,
+          title: attributes.name,
+          artist: attributes.artistName,
+          album: attributes.albumName,
+          durationMs: attributes.durationInMillis,
+          isrc: attributes.isrc,
+        });
+      }
+      nextUrl = page.next ? new URL(page.next, `${this.baseUrl}/`).toString() : null;
+    }
+
+    return tracks;
   }
 
   async createPlaylist(userToken: string, userId: string, name: string, description?: string): Promise<Playlist> {
