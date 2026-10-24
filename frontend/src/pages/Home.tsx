@@ -4,7 +4,7 @@ import { ArrowDown, ArrowRight, Check, Loader2, Music2, Sparkles } from 'lucide-
 import { getMusicFeatureFlags, submitPlaylist } from '../services/api';
 import { currentSpotifyAccessToken, spotifyAuthorizationUrl } from '../services/spotifyAuth';
 
-type Service = 'spotify' | 'apple';
+type Service = 'spotify' | 'apple' | 'youtube';
 
 export function Home() {
   const [url, setUrl] = useState('');
@@ -13,7 +13,7 @@ export function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [spotifyAuthPrompt, setSpotifyAuthPrompt] = useState(false);
-  const [features, setFeatures] = useState({ spotify: true, appleMusic: true });
+  const [features, setFeatures] = useState({ spotify: true, appleMusic: true, youtubeMusic: false });
   const navigate = useNavigate();
 
   useEffect(() => { void getMusicFeatureFlags().then(setFeatures); }, []);
@@ -23,11 +23,11 @@ export function Home() {
     if (!url.trim()) return;
     const service = detectService(url);
     if (!service) {
-      setError('Paste a Spotify or Apple Music playlist link.');
+      setError('Paste a Spotify, Apple Music, or YouTube Music playlist link.');
       return;
     }
-    if ((service === 'spotify' && !features.spotify) || (service === 'apple' && !features.appleMusic)) {
-      setError(`${service === 'spotify' ? 'Spotify' : 'Apple Music'} is temporarily unavailable.`);
+    if ((service === 'spotify' && !features.spotify) || (service === 'apple' && !features.appleMusic) || (service === 'youtube' && !features.youtubeMusic)) {
+      setError(`${service === 'spotify' ? 'Spotify' : service === 'apple' ? 'Apple Music' : 'YouTube Music'} is temporarily unavailable.`);
       return;
     }
     const expirationHours = Number(expiresInHours);
@@ -96,6 +96,7 @@ export function Home() {
           <div className="service-legend" aria-label="Supported music services">
             {features.spotify && <span className="service-pill service-pill-spotify"><span className="service-dot" /> Spotify</span>}
             {features.appleMusic && <span className="service-pill service-pill-apple"><span className="service-dot" /> Apple Music</span>}
+            {features.youtubeMusic && <span className="service-pill service-pill-youtube"><span className="service-dot" /> YouTube Music</span>}
           </div>
 
           <form className="import-card" onSubmit={handleSubmit}>
@@ -112,13 +113,13 @@ export function Home() {
               id="playlist-url"
               className="field-control url-input"
               type="url"
-              placeholder={features.spotify && features.appleMusic ? 'Spotify or Apple Music playlist link' : features.spotify ? 'Spotify playlist link' : features.appleMusic ? 'Apple Music playlist link' : 'Playlist imports are temporarily unavailable'}
+              placeholder={features.youtubeMusic ? 'Spotify, Apple Music, or YouTube Music playlist link' : features.spotify && features.appleMusic ? 'Spotify or Apple Music playlist link' : features.spotify ? 'Spotify playlist link' : features.appleMusic ? 'Apple Music playlist link' : 'Playlist imports are temporarily unavailable'}
               value={url}
               onChange={(event) => setUrl(event.target.value)}
               required
               autoComplete="url"
             />
-            <p className="field-help">{features.spotify && features.appleMusic ? 'Spotify or Apple Music is detected from the link.' : features.spotify ? 'Spotify is detected from the link.' : features.appleMusic ? 'Apple Music is detected from the link.' : 'Playlist imports are temporarily unavailable.'} We only read the playlist details needed to find your tracks.</p>
+            <p className="field-help">Supported services are detected from the link. YouTube Music playlists must be public or unlisted. We only read the playlist details needed to find your tracks.</p>
 
             <label className="field-label" htmlFor="playlist-name">Playlist name (optional)</label>
             <input
@@ -161,7 +162,7 @@ export function Home() {
               </div>
             )}
 
-            <button type="submit" className="button button-primary import-submit" disabled={loading || (!features.spotify && !features.appleMusic)}>
+            <button type="submit" className="button button-primary import-submit" disabled={loading || (!features.spotify && !features.appleMusic && !features.youtubeMusic)}>
               {loading ? <><Loader2 className="spin" size={18} /> Preparing your link…</> : <>Create or update your link <ArrowRight size={18} /></>}
             </button>
             <div className="privacy-note"><Check size={13} /> Resubmitting an active playlist link updates it in place. Only this browser can replace it.</div>
@@ -206,6 +207,7 @@ function detectService(value: string): Service | null {
     const hostname = new URL(value).hostname.toLowerCase();
     if (hostname === 'spotify.com' || hostname.endsWith('.spotify.com')) return 'spotify';
     if (hostname === 'music.apple.com') return 'apple';
+    if (hostname === 'music.youtube.com' || hostname === 'youtube.com' || hostname === 'www.youtube.com') return 'youtube';
     return null;
   } catch {
     return null;

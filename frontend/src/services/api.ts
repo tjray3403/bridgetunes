@@ -7,8 +7,8 @@ const apiClient = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
-export type MusicFeatureFlags = { spotify: boolean; appleMusic: boolean };
-const defaultMusicFeatureFlags: MusicFeatureFlags = { spotify: true, appleMusic: true };
+export type MusicFeatureFlags = { spotify: boolean; appleMusic: boolean; youtubeMusic: boolean };
+const defaultMusicFeatureFlags: MusicFeatureFlags = { spotify: true, appleMusic: true, youtubeMusic: false };
 let musicFeatureFlagsRequest: Promise<MusicFeatureFlags> | undefined;
 
 export function getMusicFeatureFlags(): Promise<MusicFeatureFlags> {
@@ -23,7 +23,7 @@ export async function refreshMusicFeatureFlags(): Promise<MusicFeatureFlags> {
 
 async function requestMusicFeatureFlags(): Promise<MusicFeatureFlags> {
   const { data } = await apiClient.get<MusicFeatureFlags>('/api/features');
-  return { spotify: data.spotify !== false, appleMusic: data.appleMusic !== false };
+  return { spotify: data.spotify !== false, appleMusic: data.appleMusic !== false, youtubeMusic: data.youtubeMusic === true };
 }
 
 function ownerKeyForPlaylist(url: string): string {

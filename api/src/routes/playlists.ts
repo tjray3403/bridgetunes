@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import crypto from 'crypto';
-import { AppleMusicAdapter, SpotifyAdapter } from '@bridgetunes/adapters';
+import { AppleMusicAdapter, SpotifyAdapter, YouTubeMusicAdapter } from '@bridgetunes/adapters';
 import type { Track } from '@bridgetunes/adapters';
 import { db } from '../services/firebase.js';
 import { getSpotifyAppToken } from '../services/spotify.js';
@@ -123,6 +123,8 @@ export async function playlistRoutes(fastify: FastifyInstance) {
     const features = getMusicFeatureFlags();
     if (service === 'spotify' && !features.spotify) return reply.status(503).send({ error: 'Spotify is temporarily disabled.' });
     if (service === 'apple' && !features.appleMusic) return reply.status(503).send({ error: 'Apple Music is temporarily disabled.' });
+    if (service === 'youtube' && !features.youtubeMusic) return reply.status(503).send({ error: 'YouTube Music is temporarily disabled.' });
+    if (service === 'youtube' && !process.env.YOUTUBE_API_KEY) return reply.status(503).send({ error: 'YouTube is not configured on the API.' });
     if (!Number.isInteger(expiresInHours) || expiresInHours < 1 || expiresInHours > 720) {
       return reply.status(400).send({ error: 'Link duration must be between 1 and 720 hours.' });
     }
@@ -259,6 +261,24 @@ export async function playlistRoutes(fastify: FastifyInstance) {
       }
       return reply.status(202).send({ playlistId, status: 'processing', replaced: true });
     }
+    if (existing.exists && existingData?.sourceService === 'youtube') {
+      if (service !== 'youtube') return reply.status(409).send({ error: 'This playlist link was created from a YouTube Music playlist.' });
+      if (existingData.ownerKeyHash && !isValidOwnerKey(ownerKey, existingData.ownerKeyHash)) return reply.status(403).send({ error: 'Only the browser that created this link can replace it.' });
+      const adapter = new YouTubeMusicAdapter();
+      const parsed = adapter.parseUrl(cleanUrl);
+      if (!parsed) return reply.status(400).send({ error: 'Invalid YouTube Music playlist URL' });
+      try {
+        const updatedTracks = await adapter.getPlaylistTracks('', parsed.playlistId);
+        if (!updatedTracks.length) return reply.status(422).send({ error: 'No public tracks were found in this YouTube playlist.' });
+        const name = nameOverride || await adapter.getPlaylistName('', parsed.playlistId) || existingData.name || 'Your playlist';
+        await queueMatchingTracks(playlistId, updatedTracks, existingData.status === 'processing' ? existingData.processingRunId : undefined);
+        await playlistRef.update({ error: null, name, updatedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + expiresInHours * 60 * 60 * 1000).toISOString(), expiresInHours });
+        return reply.status(202).send({ playlistId, status: 'processing', replaced: true });
+      } catch (error) {
+        request.log.error(error, 'Failed to reread YouTube playlist');
+        return reply.status(502).send({ error: 'Could not reread this YouTube playlist. Check that it is public or unlisted.' });
+      }
+    }
     if (existing.exists && existingData?.status === 'ready') {
       if (!isValidOwnerKey(ownerKey, existingData.ownerKeyHash)) {
         return reply.status(403).send({ error: 'Only the browser that created this link can replace it.' });
@@ -274,6 +294,7 @@ export async function playlistRoutes(fastify: FastifyInstance) {
 
     let spotifyTracks: Track[] | undefined;
     let appleTracks: Track[] | undefined;
+    let youtubeTracks: Track[] | undefined;
     let sourcePlaylistName = nameOverride || '';
     if (service === 'spotify') {
       const adapter = new SpotifyAdapter();
@@ -336,6 +357,21 @@ export async function playlistRoutes(fastify: FastifyInstance) {
       }
     }
 
+    if (service === 'youtube') {
+      const adapter = new YouTubeMusicAdapter();
+      const parsed = adapter.parseUrl(cleanUrl);
+      if (!parsed) return reply.status(400).send({ error: 'Invalid YouTube Music playlist URL' });
+      try {
+        youtubeTracks = await adapter.getPlaylistTracks('', parsed.playlistId);
+        if (!sourcePlaylistName) sourcePlaylistName = await adapter.getPlaylistName('', parsed.playlistId) || '';
+      } catch (error) {
+        request.log.error(error, 'Failed to read YouTube playlist');
+        const status = (error as Error & { status?: number }).status;
+        return reply.status(status === 403 || status === 404 ? 422 : 502).send({ error: 'Could not read this YouTube playlist. It must be public or unlisted.' });
+      }
+      if (!youtubeTracks.length) return reply.status(422).send({ error: 'No public tracks were found in this YouTube playlist.' });
+    }
+
     try {
       await playlistRef.create({
         id: playlistId,
@@ -358,7 +394,7 @@ export async function playlistRoutes(fastify: FastifyInstance) {
     await sourceRef.set({ playlistId, sourceKey, updatedAt: new Date().toISOString() });
 
     try {
-      const sourceTracks = spotifyTracks || appleTracks;
+      const sourceTracks = spotifyTracks || appleTracks || youtubeTracks;
       if (!sourceTracks) throw new Error('Playlist tracks were not loaded');
       await queueMatchingTracks(playlistId, sourceTracks);
     } catch (error) {
