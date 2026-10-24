@@ -72,6 +72,7 @@ a { color: inherit; text-decoration: none; }
 .service-dot, .legend-dot, .tag-dot, .source-dot { display: inline-block; width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; }
 .service-pill-spotify .service-dot, .legend-spotify, .tag-dot-spotify, .source-spotify { background: var(--spotify); box-shadow: 0 0 8px rgba(67,207,138,.35); }
 .service-pill-apple .service-dot, .legend-apple, .tag-dot-apple, .source-apple { background: var(--apple); box-shadow: 0 0 8px rgba(250,102,125,.25); }
+.service-pill-youtube .service-dot, .legend-youtube, .tag-dot-youtube, .source-youtube { background: #ff5151; box-shadow: 0 0 8px rgba(255,81,81,.3); }
 
 .import-card { padding: 25px; border: 1px solid rgba(255,255,255,.105); border-radius: 18px; background: linear-gradient(145deg, rgba(31,29,27,.96), rgba(23,22,21,.98)); box-shadow: 0 24px 80px rgba(0,0,0,.3), inset 0 1px rgba(255,255,255,.025); }
 .card-heading { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 21px; }
@@ -228,7 +229,8 @@ a { color: inherit; text-decoration: none; }
 .tag-dash { color: #5c5751; font-size: 10px; }
 .tag-spotify-available { border-color: rgba(67,207,138,.2); background: rgba(67,207,138,.06); color: #b4ddc5; }
 .tag-apple-available { border-color: rgba(250,102,125,.18); background: rgba(250,102,125,.05); color: #e2b5bb; }
-.tag-spotify-available .tag-dot, .tag-apple-available .tag-dot { opacity: 1; }
+.tag-youtube-available { border-color: rgba(255,81,81,.2); background: rgba(255,81,81,.06); color: #efb3b3; }
+.tag-spotify-available .tag-dot, .tag-apple-available .tag-dot, .tag-youtube-available .tag-dot { opacity: 1; }
 .desktop-duration { text-align: right; }
 .empty-tracks { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 95px; margin-top: 14px; border: 1px dashed var(--line-strong); border-radius: 14px; color: #918a80; font-size: 11px; }
 .empty-tracks svg { color: var(--gold); }

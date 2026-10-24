@@ -5,13 +5,14 @@ import { getMusicFeatureFlags, getPlaylist, hasPlaylistOwnerKey, rematchApplePla
 import { currentSpotifyAccessToken, spotifyAuthorizationUrl } from '../services/spotifyAuth';
 import { createSpotifyPlaylist, type SpotifyCreationProgress } from '../services/spotifyPlaylist';
 import { authorizeAppleMusic, createAppleMusicPlaylist, prepareAppleMusic, type AppleCreationProgress } from '../services/appleMusic';
+import { createYouTubeMusicPlaylist, prepareYouTubeMusic, type YouTubeCreationProgress } from '../services/youtubeMusic';
 
 type PlaylistTrack = {
   id?: string;
   title?: string;
   artist?: string;
   durationMs?: number;
-  availability?: { spotify?: string | null; apple?: string | null };
+  availability?: { spotify?: string | null; apple?: string | null; youtube?: string | null };
 };
 
 type PlaylistData = {
@@ -38,8 +39,11 @@ export function SmartLink() {
   const [appleSetupError, setAppleSetupError] = useState('');
   const [appleProgress, setAppleProgress] = useState<AppleCreationProgress | null>(null);
   const [applePlaylistUrl, setApplePlaylistUrl] = useState('');
-  const [selectedProvider, setSelectedProvider] = useState<'spotify' | 'apple'>('spotify');
-  const [features, setFeatures] = useState({ spotify: true, appleMusic: true });
+  const [youtubeBusy, setYoutubeBusy] = useState(false);
+  const [youtubeProgress, setYoutubeProgress] = useState<YouTubeCreationProgress | null>(null);
+  const [youtubePlaylistUrl, setYoutubePlaylistUrl] = useState('');
+  const [selectedProvider, setSelectedProvider] = useState<'spotify' | 'apple' | 'youtube'>('spotify');
+  const [features, setFeatures] = useState({ spotify: true, appleMusic: true, youtubeMusic: false });
   const visitTrackedFor = useRef<string | null>(null);
 
   useEffect(() => {
@@ -49,6 +53,7 @@ export function SmartLink() {
     setSelectedProvider('spotify');
     setSpotifyPlaylistUrl('');
     setApplePlaylistUrl('');
+    setYoutubePlaylistUrl('');
     setSpotifyProgress(null);
     setAppleProgress(null);
   }, [id]);
@@ -63,6 +68,7 @@ export function SmartLink() {
     void getMusicFeatureFlags().then((nextFeatures) => {
       setFeatures(nextFeatures);
       if (!nextFeatures.spotify && nextFeatures.appleMusic) setSelectedProvider('apple');
+      else if (!nextFeatures.spotify && !nextFeatures.appleMusic && nextFeatures.youtubeMusic) setSelectedProvider('youtube');
     });
   }, []);
 
@@ -80,6 +86,12 @@ export function SmartLink() {
     });
     return () => { active = false; };
   }, [features.appleMusic]);
+
+  useEffect(() => {
+    if (features.youtubeMusic) void prepareYouTubeMusic().catch((cause: unknown) => {
+      setShareMessage(cause instanceof Error ? cause.message : 'Google sign-in could not be initialized.');
+    });
+  }, [features.youtubeMusic]);
 
   useEffect(() => {
     if (!id) return;
@@ -150,6 +162,9 @@ export function SmartLink() {
       ? track.id
       : track.availability?.apple)
     .filter((trackId): trackId is string => Boolean(trackId));
+  const youtubeVideoIds = tracks
+    .map((track) => playlist.sourceService === 'youtube' && track.id ? track.id : track.availability?.youtube)
+    .filter((videoId): videoId is string => Boolean(videoId));
   const canRematchApple = isReady
     && appleTrackIds.length === 0
     && Boolean(playlist.sourceUrl && hasPlaylistOwnerKey(playlist.sourceUrl, id));
@@ -221,6 +236,23 @@ export function SmartLink() {
     }
   };
 
+  const createInYouTubeMusic = async () => {
+    if (!isReady || youtubeVideoIds.length === 0 || youtubeBusy) return;
+    if (!window.confirm(`Allow BridgeTunes to create a private YouTube playlist named “${playlist.name || 'Your playlist'}” and add ${youtubeVideoIds.length} matched videos?`)) return;
+    setYoutubeBusy(true);
+    setYoutubeProgress({ completed: 0, total: youtubeVideoIds.length });
+    try {
+      const url = await createYouTubeMusicPlaylist(playlist.name || 'Your playlist', youtubeVideoIds, (progress) => {
+        setYoutubeProgress(progress);
+        if (progress.playlistUrl) setYoutubePlaylistUrl(progress.playlistUrl);
+      });
+      setYoutubePlaylistUrl(url);
+      setShareMessage('Your YouTube Music playlist is ready to open.');
+    } catch (cause) {
+      setShareMessage(cause instanceof Error ? cause.message : 'Could not create the YouTube Music playlist.');
+    } finally { setYoutubeBusy(false); }
+  };
+
   const findAppleMatchesFromDatabase = async () => {
     if (!id || !playlist.sourceUrl || !canRematchApple || appleRematching) return;
     setAppleRematching(true);
@@ -250,15 +282,16 @@ export function SmartLink() {
     }
   };
 
-  const selectedPlaylistUrl = selectedProvider === 'spotify' ? spotifyPlaylistUrl : applePlaylistUrl;
-  const selectedProviderBusy = selectedProvider === 'spotify' ? spotifyBusy : appleBusy || appleRematching;
+  const selectedPlaylistUrl = selectedProvider === 'spotify' ? spotifyPlaylistUrl : selectedProvider === 'apple' ? applePlaylistUrl : youtubePlaylistUrl;
+  const selectedProviderBusy = selectedProvider === 'spotify' ? spotifyBusy : selectedProvider === 'apple' ? appleBusy || appleRematching : youtubeBusy;
   const selectedProviderHasMatches = selectedProvider === 'spotify'
     ? spotifyTrackUris.length > 0
-    : appleTrackIds.length > 0;
-  const selectedProviderName = selectedProvider === 'spotify' ? 'Spotify' : 'Apple Music';
+    : selectedProvider === 'apple' ? appleTrackIds.length > 0 : youtubeVideoIds.length > 0;
+  const selectedProviderName = selectedProvider === 'spotify' ? 'Spotify' : selectedProvider === 'apple' ? 'Apple Music' : 'YouTube Music';
   const createSelectedPlaylist = () => {
     if (selectedProvider === 'spotify') void createInSpotify();
-    else void createInAppleMusic();
+    else if (selectedProvider === 'apple') void createInAppleMusic();
+    else void createInYouTubeMusic();
   };
   const handleSelectedProviderAction = () => {
     if (selectedProvider === 'apple' && canRematchApple) void findAppleMatchesFromDatabase();
@@ -287,24 +320,25 @@ export function SmartLink() {
             <div className="share-stats"><span>{tracks.length} tracks</span><span className="stat-divider" /><span>{isReady ? 'Ready to share' : isProcessing ? 'Matching tracks' : 'Import status'}</span></div>
             <div className="share-actions">
               <button type="button" className="button button-secondary" onClick={() => void copyShareLink()}><Clipboard size={15} /> Copy link</button>
-              {features.spotify && features.appleMusic && <label className="visually-hidden" htmlFor="playlist-destination">Choose a music service</label>}
-              {features.spotify && features.appleMusic && <select
+              {[features.spotify, features.appleMusic, features.youtubeMusic].filter(Boolean).length > 1 && <label className="visually-hidden" htmlFor="playlist-destination">Choose a music service</label>}
+              {[features.spotify, features.appleMusic, features.youtubeMusic].filter(Boolean).length > 1 && <select
                 id="playlist-destination"
                 className="button button-secondary provider-select"
                 value={selectedProvider}
-                onChange={(event) => setSelectedProvider(event.target.value as 'spotify' | 'apple')}
+                onChange={(event) => setSelectedProvider(event.target.value as 'spotify' | 'apple' | 'youtube')}
               >
-                <option value="spotify">Spotify</option>
-                <option value="apple">Apple Music</option>
+                {features.spotify && <option value="spotify">Spotify</option>}
+                {features.appleMusic && <option value="apple">Apple Music</option>}
+                {features.youtubeMusic && <option value="youtube">YouTube Music</option>}
               </select>}
-              {!features.spotify && !features.appleMusic ? <span className="share-action-message">Playlist transfers are temporarily unavailable.</span> : null}
-              {features.spotify || features.appleMusic ? selectedPlaylistUrl ? (
+              {!features.spotify && !features.appleMusic && !features.youtubeMusic ? <span className="share-action-message">Playlist transfers are temporarily unavailable.</span> : null}
+              {features.spotify || features.appleMusic || features.youtubeMusic ? selectedPlaylistUrl ? (
                 <a className="button button-primary" href={selectedPlaylistUrl} target="_blank" rel="noreferrer"><Music2 size={15} /> Open in {selectedProviderName}</a>
               ) : (
                 <button type="button" className="button button-primary" onClick={handleSelectedProviderAction} disabled={!isReady || (!selectedProviderHasMatches && !canRematchApple) || selectedProviderBusy}>
                   {selectedProviderBusy ? <Loader2 className="spin" size={15} /> : <Music2 size={15} />}
                   {selectedProviderBusy
-                    ? selectedProvider === 'spotify' ? 'Creating in Spotify…' : appleRematching ? 'Finding Apple matches…' : 'Connecting to Apple Music…'
+                    ? selectedProvider === 'spotify' ? 'Creating in Spotify…' : selectedProvider === 'apple' ? appleRematching ? 'Finding Apple matches…' : 'Connecting to Apple Music…' : 'Creating in YouTube Music…'
                     : canRematchApple ? 'Find Apple matches'
                     : !selectedProviderHasMatches && isReady ? `No ${selectedProviderName} matches`
                       : selectedProvider === 'apple' && appleSetupError ? 'Retry Apple Music setup'
@@ -314,7 +348,8 @@ export function SmartLink() {
             </div>
             {spotifyBusy && spotifyProgress && <SpotifyProgress progress={spotifyProgress} />}
             {appleBusy && appleProgress && <AppleProgress progress={appleProgress} />}
-            {(features.spotify || features.appleMusic) && <p className="share-action-help">Each service will ask you to authorize creating a private playlist with the matched tracks.</p>}
+            {youtubeBusy && youtubeProgress && <p className="share-action-message">Adding YouTube videos: {youtubeProgress.completed} of {youtubeProgress.total}.</p>}
+            {(features.spotify || features.appleMusic || features.youtubeMusic) && <p className="share-action-help">Each service will ask you to authorize creating a private playlist with the matched tracks.</p>}
             {appleSetupError && <p className="share-action-message" role="status">Apple Music setup: {appleSetupError}</p>}
             {features.appleMusic && isReady && appleTrackIds.length === 0
               ? <p className="share-action-message" role="status">{canRematchApple
@@ -338,6 +373,7 @@ export function SmartLink() {
           <div className="provider-legend">
             {features.spotify && <span><i className="legend-dot legend-spotify" /> Spotify</span>}
             {features.appleMusic && <span><i className="legend-dot legend-apple" /> Apple Music</span>}
+            {features.youtubeMusic && <span><i className="legend-dot legend-youtube" /> YouTube Music</span>}
             {isProcessing && <span className="match-progress-text">{progressPercent}% matched</span>}
           </div>
           {isProcessing && <div className="progress-track"><span style={{ width: `${progressPercent}%` }} /></div>}
@@ -358,6 +394,7 @@ export function SmartLink() {
                   <div className="track-platforms">
                     <AvailabilityTag platform="spotify" available={Boolean(track.availability?.spotify)} />
                     <AvailabilityTag platform="apple" available={Boolean(track.availability?.apple)} />
+                    <AvailabilityTag platform="youtube" available={Boolean(track.availability?.youtube || (playlist.sourceService === 'youtube' && track.id))} />
                   </div>
                   {track.durationMs ? <span className="track-duration desktop-duration">{formatDuration(track.durationMs)}</span> : null}
                 </article>
@@ -397,11 +434,11 @@ function AppleProgress({ progress }: { progress: AppleCreationProgress }) {
   </div>;
 }
 
-function AvailabilityTag({ platform, available }: { platform: 'spotify' | 'apple'; available: boolean }) {
+function AvailabilityTag({ platform, available }: { platform: 'spotify' | 'apple' | 'youtube'; available: boolean }) {
   return (
     <span className={`availability-tag ${available ? `tag-${platform}-available` : ''}`} aria-label={`${serviceName(platform)} ${available ? 'available' : 'not found'}`}>
       <i className={`tag-dot tag-dot-${platform}`} />
-      <span className="tag-label">{platform === 'apple' ? 'Apple' : 'Spotify'}</span>
+      <span className="tag-label">{platform === 'apple' ? 'Apple' : platform === 'youtube' ? 'YouTube' : 'Spotify'}</span>
       {available ? <Check size={12} /> : <span className="tag-dash">—</span>}
     </span>
   );
@@ -409,6 +446,7 @@ function AvailabilityTag({ platform, available }: { platform: 'spotify' | 'apple
 
 function serviceName(service?: string): string {
   if (service === 'apple') return 'Apple Music';
+  if (service === 'youtube') return 'YouTube Music';
   return 'Spotify';
 }
 

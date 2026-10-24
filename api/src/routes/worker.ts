@@ -17,7 +17,7 @@ import {
   type TrackMatch,
   type TrackMatchRecord,
 } from '../services/cache.js';
-import { SpotifyAdapter, AppleMusicAdapter } from '@bridgetunes/adapters';
+import { SpotifyAdapter, AppleMusicAdapter, YouTubeMusicAdapter } from '@bridgetunes/adapters';
 
 async function isCurrentProcessingRun(playlistRef: DocumentReference, runId: string): Promise<boolean> {
   const snapshot = await playlistRef.get();
@@ -62,16 +62,16 @@ export async function workerRoutes(fastify: FastifyInstance) {
     const { playlistId, cleanUrl, service } = request.body;
 
     // Instantiate correct adapter based on source service
-    if (!['spotify', 'apple'].includes(service)) {
+    if (!['spotify', 'apple', 'youtube'].includes(service)) {
       await db.collection('playlists').doc(playlistId).update({ status: 'failed', error: 'Unsupported music service' });
       return reply.status(400).send({ error: 'Unsupported music service' });
     }
     const features = getMusicFeatureFlags();
-    if ((service === 'spotify' && !features.spotify) || (service === 'apple' && !features.appleMusic)) {
-      await db.collection('playlists').doc(playlistId).update({ status: 'failed', error: `${service === 'spotify' ? 'Spotify' : 'Apple Music'} is temporarily disabled.` });
+    if ((service === 'spotify' && !features.spotify) || (service === 'apple' && !features.appleMusic) || (service === 'youtube' && !features.youtubeMusic)) {
+      await db.collection('playlists').doc(playlistId).update({ status: 'failed', error: `${service === 'spotify' ? 'Spotify' : service === 'apple' ? 'Apple Music' : 'YouTube Music'} is temporarily disabled.` });
       return reply.send({ success: false, disabled: true });
     }
-    const adapter = service === 'spotify' ? new SpotifyAdapter() : new AppleMusicAdapter();
+    const adapter = service === 'spotify' ? new SpotifyAdapter() : service === 'apple' ? new AppleMusicAdapter() : new YouTubeMusicAdapter();
     const parsed = adapter.parseUrl(cleanUrl);
 
     if (!parsed) {
@@ -80,9 +80,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const accessToken = service === 'spotify'
-        ? await getSpotifyAppToken()
-        : process.env.APPLE_DEVELOPER_TOKEN || '';
+      const accessToken = service === 'spotify' ? await getSpotifyAppToken() : process.env.APPLE_DEVELOPER_TOKEN || '';
       const rawTracks = await adapter.getPlaylistTracks(accessToken, parsed.playlistId);
       const sourcePlaylistName = await adapter.getPlaylistName(accessToken, parsed.playlistId).catch(() => null);
 
@@ -128,7 +126,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
   });
 
   // Worker 2: Match chunk tracks against target platforms
-  fastify.post('/api/jobs/match-chunk', async (request: FastifyRequest<{ Body: { playlistId: string; chunkIndex: number; runId: string; targetService?: 'apple' | 'spotify'; tracks?: any[] } }>, reply) => {
+  fastify.post('/api/jobs/match-chunk', async (request: FastifyRequest<{ Body: { playlistId: string; chunkIndex: number; runId: string; targetService?: 'apple' | 'spotify' | 'youtube'; tracks?: any[] } }>, reply) => {
     const { playlistId, chunkIndex, runId, targetService } = request.body;
 
     const playlistRef = db.collection('playlists').doc(playlistId);
@@ -149,10 +147,12 @@ export async function workerRoutes(fastify: FastifyInstance) {
     // Load the whole chunk's hot match cache with one Redis MGET. Firestore remains
     // the durable cache and is consulted only for ISRCs Redis did not have.
     const features = getMusicFeatureFlags();
-    const spotifyEnabledForRun = features.spotify && targetService !== 'apple';
-    const appleEnabledForRun = features.appleMusic && targetService !== 'spotify';
+    const spotifyEnabledForRun = features.spotify && targetService !== 'apple' && targetService !== 'youtube';
+    const appleEnabledForRun = features.appleMusic && targetService !== 'spotify' && targetService !== 'youtube';
+    const youtubeEnabledForRun = features.youtubeMusic && targetService !== 'spotify' && targetService !== 'apple';
     const spotifyAdapter = new SpotifyAdapter();
     const appleAdapter = new AppleMusicAdapter();
+    const youtubeAdapter = new YouTubeMusicAdapter();
     const spotifyToken = spotifyEnabledForRun ? await getSpotifyAppToken() : '';
     const appleToken = appleEnabledForRun ? process.env.APPLE_DEVELOPER_TOKEN || '' : '';
     const sourceIsSpotify = playlistData.sourceService === 'spotify';
@@ -193,7 +193,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
 
     const changedRecords = new Map<string, TrackMatchRecord>();
     const trackWrites = db.batch();
-    const resolvedTracks = [] as Array<{ position: number; availability: { spotify: string | null; apple: string | null } }>;
+    const resolvedTracks = [] as Array<{ position: number; availability: { spotify: string | null; apple: string | null; youtube: string | null } }>;
     for (const [offset, track] of tracks.entries()) {
       if (!(await isCurrentProcessingRun(playlistRef, runId))) {
         return reply.send({ success: true, stale: true });
@@ -201,7 +201,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
       const position = chunkIndex * 25 + offset;
       const isrc = normalizeIsrc(track.isrc);
       const record = isrc ? (matchRecords.get(isrc) || { matches: {} }) : undefined;
-      const availability: { spotify: string | null; apple: string | null } = { spotify: null, apple: null };
+      const availability: { spotify: string | null; apple: string | null; youtube: string | null } = { spotify: null, apple: null, youtube: null };
       let recordChanged = false;
 
       const findCached = (service: 'spotify' | 'apple'): TrackMatch | undefined => {
@@ -264,6 +264,22 @@ export async function workerRoutes(fastify: FastifyInstance) {
         }
       }
 
+      if (youtubeEnabledForRun) {
+        if (!(await isCurrentProcessingRun(playlistRef, runId))) return reply.send({ success: true, stale: true });
+        try {
+          availability.youtube = playlistData.sourceService === 'youtube' && typeof track.id === 'string'
+            ? track.id
+            : await youtubeAdapter.searchTrack('', track, 'US');
+        } catch (error) {
+          const providerError = error as Error & { status?: number; retryAfter?: string };
+          const status = providerError.status;
+          request.log.error({ err: error, position, hasIsrc: Boolean(isrc) }, 'YouTube matching failed for a saved track');
+          const response = reply.status(status === 429 || (status !== undefined && status >= 500) ? 503 : 502);
+          if (status === 429 || (status !== undefined && status >= 500)) response.header('Retry-After', providerError.retryAfter || '30');
+          return response.send({ error: 'YouTube search failed; the matching job can be retried.' });
+        }
+      }
+
       if (isrc && recordChanged && record) {
         changedRecords.set(isrc, record);
         matchRecords.set(isrc, record);
@@ -303,6 +319,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
             ...(allTracks[resolved.position].availability || {}),
             ...(targetService === 'apple' ? { apple: resolved.availability.apple } : {}),
             ...(targetService === 'spotify' ? { spotify: resolved.availability.spotify } : {}),
+            ...(targetService === 'youtube' ? { youtube: resolved.availability.youtube } : {}),
             ...(!targetService ? resolved.availability : {}),
           };
         }
