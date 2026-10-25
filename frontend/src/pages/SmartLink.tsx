@@ -13,6 +13,7 @@ type PlaylistTrack = {
   artist?: string;
   durationMs?: number;
   availability?: { spotify?: string | null; apple?: string | null; youtube?: string | null };
+  availabilityStatus?: { spotify?: string; apple?: string; youtube?: string };
 };
 
 type PlaylistData = {
@@ -179,7 +180,7 @@ export function SmartLink() {
   };
 
   const createInSpotify = async () => {
-    if (!isReady || spotifyTrackUris.length === 0 || spotifyBusy) return;
+    if (spotifyTrackUris.length === 0 || spotifyBusy) return;
     const approved = window.confirm(`Allow BridgeTunes to create a private Spotify playlist named “${playlist.name || 'Your playlist'}” and add ${spotifyTrackUris.length} matched tracks?`);
     if (!approved) return;
 
@@ -206,7 +207,7 @@ export function SmartLink() {
   };
 
   const createInAppleMusic = async () => {
-    if (!isReady || appleTrackIds.length === 0 || appleBusy) return;
+    if (appleTrackIds.length === 0 || appleBusy) return;
     const approved = window.confirm(`Allow BridgeTunes to create a private Apple Music playlist named “${playlist.name || 'Your playlist'}” and add ${appleTrackIds.length} matched tracks?`);
     if (!approved) return;
 
@@ -237,7 +238,7 @@ export function SmartLink() {
   };
 
   const createInYouTubeMusic = async () => {
-    if (!isReady || youtubeVideoIds.length === 0 || youtubeBusy) return;
+    if (youtubeVideoIds.length === 0 || youtubeBusy) return;
     if (!window.confirm(`Allow BridgeTunes to create a private YouTube playlist named “${playlist.name || 'Your playlist'}” and add ${youtubeVideoIds.length} matched videos?`)) return;
     setYoutubeBusy(true);
     setYoutubeProgress({ completed: 0, total: youtubeVideoIds.length });
@@ -335,14 +336,18 @@ export function SmartLink() {
               {features.spotify || features.appleMusic || features.youtubeMusic ? selectedPlaylistUrl ? (
                 <a className="button button-primary" href={selectedPlaylistUrl} target="_blank" rel="noreferrer"><Music2 size={15} /> Open in {selectedProviderName}</a>
               ) : (
-                <button type="button" className="button button-primary" onClick={handleSelectedProviderAction} disabled={!isReady || (!selectedProviderHasMatches && !canRematchApple) || selectedProviderBusy}>
+                <button type="button" className="button button-primary" onClick={handleSelectedProviderAction} disabled={(!selectedProviderHasMatches && !canRematchApple) || selectedProviderBusy}>
                   {selectedProviderBusy ? <Loader2 className="spin" size={15} /> : <Music2 size={15} />}
                   {selectedProviderBusy
                     ? selectedProvider === 'spotify' ? 'Creating in Spotify…' : selectedProvider === 'apple' ? appleRematching ? 'Finding Apple matches…' : 'Connecting to Apple Music…' : 'Creating in YouTube Music…'
                     : canRematchApple ? 'Find Apple matches'
+                    : !selectedProviderHasMatches && isProcessing ? `Waiting for ${selectedProviderName} matches`
                     : !selectedProviderHasMatches && isReady ? `No ${selectedProviderName} matches`
-                      : selectedProvider === 'apple' && appleSetupError ? 'Retry Apple Music setup'
-                        : `Create in ${selectedProviderName}`}
+                    : selectedProvider === 'apple' && appleSetupError ? 'Retry Apple Music setup'
+                    : selectedProvider === 'spotify' ? `Create in Spotify (${spotifyTrackUris.length})`
+                    : selectedProvider === 'apple' ? `Create in Apple Music (${appleTrackIds.length})`
+                    : `Create in YouTube Music (${youtubeVideoIds.length})`
+                  }
                 </button>
               ) : null}
             </div>
@@ -392,9 +397,9 @@ export function SmartLink() {
                   <span className="track-art" aria-hidden="true"><Music2 size={15} /></span>
                   <div className="track-details"><strong>{track.title || 'Unknown track'}</strong><span>{track.artist || 'Unknown artist'}</span></div>
                   <div className="track-platforms">
-                    <AvailabilityTag platform="spotify" available={Boolean(track.availability?.spotify)} />
-                    <AvailabilityTag platform="apple" available={Boolean(track.availability?.apple)} />
-                    <AvailabilityTag platform="youtube" available={Boolean(track.availability?.youtube || (playlist.sourceService === 'youtube' && track.id))} />
+                    <AvailabilityTag platform="spotify" available={Boolean(track.availability?.spotify)} temporarilyUnavailable={track.availabilityStatus?.spotify === 'temporarily_unavailable'} />
+                    <AvailabilityTag platform="apple" available={Boolean(track.availability?.apple || (playlist.sourceService === 'apple' && track.id && !track.id.startsWith('spotify:track:')))} temporarilyUnavailable={track.availabilityStatus?.apple === 'temporarily_unavailable'} />
+                    <AvailabilityTag platform="youtube" available={Boolean(track.availability?.youtube || (playlist.sourceService === 'youtube' && track.id))} temporarilyUnavailable={track.availabilityStatus?.youtube === 'temporarily_unavailable'} />
                   </div>
                   {track.durationMs ? <span className="track-duration desktop-duration">{formatDuration(track.durationMs)}</span> : null}
                 </article>
@@ -434,12 +439,12 @@ function AppleProgress({ progress }: { progress: AppleCreationProgress }) {
   </div>;
 }
 
-function AvailabilityTag({ platform, available }: { platform: 'spotify' | 'apple' | 'youtube'; available: boolean }) {
+function AvailabilityTag({ platform, available, temporarilyUnavailable = false }: { platform: 'spotify' | 'apple' | 'youtube'; available: boolean; temporarilyUnavailable?: boolean }) {
   return (
-    <span className={`availability-tag ${available ? `tag-${platform}-available` : ''}`} aria-label={`${serviceName(platform)} ${available ? 'available' : 'not found'}`}>
+    <span className={`availability-tag ${available ? `tag-${platform}-available` : ''}`} aria-label={`${serviceName(platform)} ${available ? 'available' : temporarilyUnavailable ? 'temporarily unavailable' : 'not found'}`} title={temporarilyUnavailable ? `${serviceName(platform)} is temporarily unavailable after retries.` : undefined}>
       <i className={`tag-dot tag-dot-${platform}`} />
       <span className="tag-label">{platform === 'apple' ? 'Apple' : platform === 'youtube' ? 'YouTube' : 'Spotify'}</span>
-      {available ? <Check size={12} /> : <span className="tag-dash">—</span>}
+      {available ? <Check size={12} /> : temporarilyUnavailable ? <span className="tag-dash">Later</span> : <span className="tag-dash">—</span>}
     </span>
   );
 }

@@ -21,7 +21,15 @@ function isValidOwnerKey(candidate: string | undefined, storedHash: string | und
   return candidateHash.length === expectedHash.length && crypto.timingSafeEqual(candidateHash, expectedHash);
 }
 
-async function queueMatchingTracks(playlistId: string, tracks: Track[], previousRunId?: string): Promise<void> {
+type MusicService = 'spotify' | 'apple' | 'youtube';
+
+function sourceAvailability(track: Track, sourceService: MusicService): Partial<Record<MusicService, string>> {
+  if (typeof track.id !== 'string' || !track.id) return {};
+  if (sourceService === 'spotify' && !track.id.startsWith('spotify:track:')) return {};
+  return { [sourceService]: track.id };
+}
+
+async function queueMatchingTracks(playlistId: string, tracks: Track[], sourceService: MusicService, previousRunId?: string): Promise<void> {
   const qstashToken = process.env.QSTASH_TOKEN;
   const workerBaseUrl = process.env.RENDER_EXTERNAL_URL;
   if (!qstashToken || !workerBaseUrl) throw new Error('Background job service is not configured');
@@ -37,7 +45,7 @@ async function queueMatchingTracks(playlistId: string, tracks: Track[], previous
     completedChunkIndexes: [],
     'progress.completedChunks': 0,
     'progress.totalChunks': chunks.length,
-    tracks: tracks.map((track, position) => ({ ...track, position, availability: {} })),
+    tracks: tracks.map((track, position) => ({ ...track, position, availability: sourceAvailability(track, sourceService) })),
   });
 
   if (previousRunId) {
@@ -78,11 +86,19 @@ async function queueAppleRematch(playlistId: string, tracks: Track[]): Promise<v
     completedChunkIndexes: [],
     'progress.completedChunks': 0,
     'progress.totalChunks': chunks.length,
-    tracks: tracks.map((track, position) => ({
-      ...track,
-      position,
-      availability: { ...(track as Track & { availability?: Record<string, string | null> }).availability, apple: null },
-    })),
+    tracks: tracks.map((track, position) => {
+      const availabilityStatus = { ...(track as Track & { availabilityStatus?: Record<string, string> }).availabilityStatus };
+      const matchAttempts = { ...(track as Track & { matchAttempts?: Record<string, number> }).matchAttempts };
+      delete matchAttempts.apple;
+      availabilityStatus.apple = 'pending';
+      return {
+        ...track,
+        position,
+        availability: { ...(track as Track & { availability?: Record<string, string | null> }).availability, apple: null },
+        availabilityStatus,
+        matchAttempts,
+      };
+    }),
   });
 
   for (let i = 0; i < chunks.length; i++) {
@@ -200,6 +216,7 @@ export async function playlistRoutes(fastify: FastifyInstance) {
         await queueMatchingTracks(
           playlistId,
           updatedTracks,
+          'spotify',
           existingData.status === 'processing' ? existingData.processingRunId : undefined,
         );
         await playlistRef.update({
@@ -245,6 +262,7 @@ export async function playlistRoutes(fastify: FastifyInstance) {
         await queueMatchingTracks(
           playlistId,
           updatedTracks,
+          'apple',
           existingData.status === 'processing' ? existingData.processingRunId : undefined,
         );
         await playlistRef.update({
@@ -271,7 +289,7 @@ export async function playlistRoutes(fastify: FastifyInstance) {
         const updatedTracks = await adapter.getPlaylistTracks('', parsed.playlistId);
         if (!updatedTracks.length) return reply.status(422).send({ error: 'No public tracks were found in this YouTube playlist.' });
         const name = nameOverride || await adapter.getPlaylistName('', parsed.playlistId) || existingData.name || 'Your playlist';
-        await queueMatchingTracks(playlistId, updatedTracks, existingData.status === 'processing' ? existingData.processingRunId : undefined);
+        await queueMatchingTracks(playlistId, updatedTracks, 'youtube', existingData.status === 'processing' ? existingData.processingRunId : undefined);
         await playlistRef.update({ error: null, name, updatedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + expiresInHours * 60 * 60 * 1000).toISOString(), expiresInHours });
         return reply.status(202).send({ playlistId, status: 'processing', replaced: true });
       } catch (error) {
@@ -396,7 +414,7 @@ export async function playlistRoutes(fastify: FastifyInstance) {
     try {
       const sourceTracks = spotifyTracks || appleTracks || youtubeTracks;
       if (!sourceTracks) throw new Error('Playlist tracks were not loaded');
-      await queueMatchingTracks(playlistId, sourceTracks);
+      await queueMatchingTracks(playlistId, sourceTracks, service as MusicService);
     } catch (error) {
       await playlistRef.update({ status: 'failed', error: 'Could not queue playlist processing' });
       request.log.error(error, 'Failed to enqueue playlist processing');
