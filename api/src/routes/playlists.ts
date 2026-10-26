@@ -23,6 +23,12 @@ function isValidOwnerKey(candidate: string | undefined, storedHash: string | und
 
 type MusicService = 'spotify' | 'apple' | 'youtube';
 
+function defaultPlaylistName(service: MusicService, trackCount: number): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const randomLetters = Array.from({ length: 4 }, () => alphabet[crypto.randomInt(alphabet.length)]).join('');
+  return `${service}-playlist-${randomLetters}${String(trackCount).padStart(4, '0')}`;
+}
+
 function sourceAvailability(track: Track, sourceService: MusicService): Partial<Record<MusicService, string>> {
   if (typeof track.id !== 'string' || !track.id) return {};
   if (sourceService === 'spotify' && !track.id.startsWith('spotify:track:')) return {};
@@ -132,7 +138,7 @@ export async function playlistRoutes(fastify: FastifyInstance) {
       return reply.status(400).send({ error: 'Playlist name must be 100 characters or fewer.' });
     }
     const nameOverride = typeof requestedPlaylistName === 'string' ? requestedPlaylistName.trim() : '';
-    if (typeof url !== 'string' || !url.trim() || !['spotify', 'apple'].includes(service)) {
+    if (typeof url !== 'string' || !url.trim() || !['spotify', 'apple', 'youtube'].includes(service)) {
       return reply.status(400).send({ error: 'Missing url or service' });
     }
     const features = getMusicFeatureFlags();
@@ -201,14 +207,6 @@ export async function playlistRoutes(fastify: FastifyInstance) {
         }
         return reply.status(status === 403 ? 403 : 502).send({ error: 'Could not reread this Spotify playlist.' });
       }
-      if (!nameOverride) {
-        try {
-          updatedPlaylistName = await adapter.getPlaylistName(userToken || await getSpotifyAppToken(), parsed.playlistId)
-            || existingData.name || 'Your playlist';
-        } catch (error) {
-          request.log.warn(error, 'Could not read Spotify playlist name; keeping the existing name');
-        }
-      }
       if (updatedTracks.length === 0) return reply.status(422).send({ error: 'No tracks were found in this Spotify playlist.' });
 
       try {
@@ -247,14 +245,6 @@ export async function playlistRoutes(fastify: FastifyInstance) {
         request.log.error(error, 'Failed to reread Apple Music playlist');
         return reply.status(502).send({ error: 'Could not reread this Apple Music playlist.' });
       }
-      if (!nameOverride) {
-        try {
-          updatedPlaylistName = await adapter.getPlaylistName(developerToken, parsed.playlistId)
-            || existingData.name || 'Your playlist';
-        } catch (error) {
-          request.log.warn(error, 'Could not read Apple Music playlist name; keeping the existing name');
-        }
-      }
       if (updatedTracks.length === 0) return reply.status(422).send({ error: 'No tracks were found in this Apple Music playlist.' });
 
       try {
@@ -287,7 +277,7 @@ export async function playlistRoutes(fastify: FastifyInstance) {
       try {
         const updatedTracks = await adapter.getPlaylistTracks('', parsed.playlistId);
         if (!updatedTracks.length) return reply.status(422).send({ error: 'No public tracks were found in this YouTube playlist.' });
-        const name = nameOverride || await adapter.getPlaylistName('', parsed.playlistId) || existingData.name || 'Your playlist';
+        const name = nameOverride || existingData.name || defaultPlaylistName('youtube', updatedTracks.length);
         await queueMatchingTracks(playlistId, updatedTracks, 'youtube', existingData.status === 'processing' ? existingData.processingRunId : undefined);
         await playlistRef.update({ error: null, name, updatedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + expiresInHours * 60 * 60 * 1000).toISOString(), expiresInHours });
         return reply.status(202).send({ playlistId, status: 'ready', replaced: true });
@@ -312,7 +302,7 @@ export async function playlistRoutes(fastify: FastifyInstance) {
     let spotifyTracks: Track[] | undefined;
     let appleTracks: Track[] | undefined;
     let youtubeTracks: Track[] | undefined;
-    let sourcePlaylistName = nameOverride || '';
+    const playlistName = nameOverride;
     if (service === 'spotify') {
       const adapter = new SpotifyAdapter();
       const parsed = adapter.parseUrl(cleanUrl);
@@ -340,13 +330,6 @@ export async function playlistRoutes(fastify: FastifyInstance) {
       if (spotifyTracks.length === 0) {
         return reply.status(422).send({ error: 'No tracks were found in this Spotify playlist.' });
       }
-      if (!sourcePlaylistName) {
-        try {
-          sourcePlaylistName = await adapter.getPlaylistName(spotifyAccessToken, parsed.playlistId) || '';
-        } catch (error) {
-          request.log.warn(error, 'Could not read Spotify playlist name; using the fallback name');
-        }
-      }
     }
 
     if (service === 'apple') {
@@ -365,13 +348,6 @@ export async function playlistRoutes(fastify: FastifyInstance) {
       if (appleTracks.length === 0) {
         return reply.status(422).send({ error: 'No tracks were found in this Apple Music playlist.' });
       }
-      if (!sourcePlaylistName) {
-        try {
-          sourcePlaylistName = await adapter.getPlaylistName(process.env.APPLE_DEVELOPER_TOKEN, parsed.playlistId) || '';
-        } catch (error) {
-          request.log.warn(error, 'Could not read Apple Music playlist name; using the fallback name');
-        }
-      }
     }
 
     if (service === 'youtube') {
@@ -380,7 +356,6 @@ export async function playlistRoutes(fastify: FastifyInstance) {
       if (!parsed) return reply.status(400).send({ error: 'Invalid YouTube Music playlist URL' });
       try {
         youtubeTracks = await adapter.getPlaylistTracks('', parsed.playlistId);
-        if (!sourcePlaylistName) sourcePlaylistName = await adapter.getPlaylistName('', parsed.playlistId) || '';
       } catch (error) {
         request.log.error(error, 'Failed to read YouTube playlist');
         const status = (error as Error & { status?: number }).status;
@@ -395,7 +370,7 @@ export async function playlistRoutes(fastify: FastifyInstance) {
         ownerKeyHash: hashOwnerKey(ownerKey).toString('hex'),
         sourceUrl: cleanUrl,
         sourceService: service,
-        name: sourcePlaylistName || 'Your playlist',
+        name: playlistName || defaultPlaylistName(service as MusicService, spotifyTracks?.length ?? appleTracks?.length ?? youtubeTracks?.length ?? 0),
         status: 'processing',
         progress: { completedChunks: 0, totalChunks: 0 },
         createdAt: new Date().toISOString(),

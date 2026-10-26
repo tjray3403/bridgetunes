@@ -88,17 +88,18 @@ export async function workerRoutes(fastify: FastifyInstance) {
     try {
       const accessToken = service === 'spotify' ? await getSpotifyAppToken() : process.env.APPLE_DEVELOPER_TOKEN || '';
       const rawTracks = await adapter.getPlaylistTracks(accessToken, parsed.playlistId);
-      const sourcePlaylistName = await adapter.getPlaylistName(accessToken, parsed.playlistId).catch(() => null);
 
       // Chunk tracks into groups of 25 to respect free-tier CPU/memory constraints
       const chunkSize = 25;
       const chunkCount = Math.ceil(rawTracks.length / chunkSize);
       const runId = crypto.randomUUID();
+      const savedPlaylist = await db.collection('playlists').doc(playlistId).get();
+      const playlistName = savedPlaylist.data()?.name || 'Your playlist';
 
       // A source read completes with its source IDs already available. Search
       // other services only after the user asks to transfer to one.
       await db.collection('playlists').doc(playlistId).update({
-        name: sourcePlaylistName || 'Your playlist',
+        name: playlistName,
         status: 'ready',
         matchingService: null,
         completedChunkIndexes: Array.from({ length: chunkCount }, (_, index) => index),

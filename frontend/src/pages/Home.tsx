@@ -127,11 +127,11 @@ export function Home() {
               className="field-control"
               type="text"
               maxLength={100}
-              placeholder="Use the source playlist name"
+              placeholder="Auto-generate a service playlist name"
               value={playlistName}
               onChange={(event) => setPlaylistName(event.target.value)}
             />
-            <p className="field-help">BridgeTunes reads the source name when available. Enter a name here if it can’t be read, or to use a different name.</p>
+            <p className="field-help">Leave blank to generate a name like apple-playlist-KQTR2301 (service, random letters, and track count).</p>
 
             <label className="field-label" htmlFor="link-duration">Link duration (hours)</label>
             <input
