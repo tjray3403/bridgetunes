@@ -157,10 +157,19 @@ function SmartLinkPage({ id }: { id?: string }) {
       : playlist.matchingNotice?.includes('Spotify') ? 'spotify'
         : playlist.matchingNotice?.includes('Apple Music') ? 'apple' : undefined
   );
-  // A provider limit is scoped to that provider. If an older notice has no
-  // recognizable service, keep it hidden rather than showing it for every one.
-  const hasMatchingNotice = Boolean(playlist.matchingNotice && noticeService === selectedProvider);
-  const selectedProviderStopped = hasMatchingNotice && !isProcessing;
+  // The explicit notice is preferred. Per-track unavailable statuses are the
+  // durable fallback, so the selected provider still shows its stopped state
+  // if an older/partial API response omitted the notice fields.
+  const selectedProviderUnavailableTracks = tracks.filter(
+    (track) => track.availabilityStatus?.[selectedProvider] === 'temporarily_unavailable',
+  ).length;
+  const selectedMatchingNotice = noticeService === selectedProvider ? playlist.matchingNotice : null;
+  const selectedProviderNotice = selectedMatchingNotice || (
+    selectedProviderUnavailableTracks > 0
+      ? `${serviceName(selectedProvider)} matching is temporarily unavailable. ${selectedProviderUnavailableTracks} tracks could not be checked; existing matches are saved and available to transfer.`
+      : null
+  );
+  const selectedProviderStopped = Boolean(selectedProviderNotice) && !isProcessing;
   const spotifyTrackUris = tracks
     .map((track) => playlist.sourceService === 'spotify' && track.id?.startsWith('spotify:track:')
       ? track.id
@@ -427,9 +436,9 @@ function SmartLinkPage({ id }: { id?: string }) {
             {isProcessing && <span className="match-progress-text">{progressMatchedCount} / {totalTracks} songs matched on {serviceName(progressDestination)}</span>}
           </div>
           {isProcessing && <div className="progress-track" role="progressbar" aria-label={`${completedTracks} of ${totalTracks} tracks checked`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progressPercent}><span style={{ width: `${progressPercent}%` }} /></div>}
-          {hasMatchingNotice && <>
-            <p className="share-action-message" role="status">{playlist.matchingNotice}</p>
-            <p className="match-progress-text">{playlist.matchingNoticeService ? `${serviceName(playlist.matchingNoticeService)}: ` : ''}{playlist.matchingNoticeProgress?.completedChunks ?? completedChunks} / {playlist.matchingNoticeProgress?.totalChunks ?? totalChunks} chunks completed.</p>
+          {selectedProviderNotice && !isProcessing && <>
+            <p className="share-action-message" role="status">{selectedProviderNotice}</p>
+            {(playlist.matchingNoticeProgress?.totalChunks ?? totalChunks) > 0 && <p className="match-progress-text">{serviceName(selectedProvider)}: {playlist.matchingNoticeProgress?.completedChunks ?? completedChunks} / {playlist.matchingNoticeProgress?.totalChunks ?? totalChunks} chunks completed.</p>}
           </>}
           {playlist.status === 'failed' && <p role="alert" className="notice notice-error share-error">{playlist.error || 'Playlist processing failed. Please try the link again.'}</p>}
         </section>
