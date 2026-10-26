@@ -157,7 +157,9 @@ function SmartLinkPage({ id }: { id?: string }) {
       : playlist.matchingNotice?.includes('Spotify') ? 'spotify'
         : playlist.matchingNotice?.includes('Apple Music') ? 'apple' : undefined
   );
-  const hasMatchingNotice = Boolean(playlist.matchingNotice && (!noticeService || noticeService === selectedProvider));
+  // A provider limit is scoped to that provider. If an older notice has no
+  // recognizable service, keep it hidden rather than showing it for every one.
+  const hasMatchingNotice = Boolean(playlist.matchingNotice && noticeService === selectedProvider);
   const selectedProviderStopped = hasMatchingNotice && !isProcessing;
   const spotifyTrackUris = tracks
     .map((track) => playlist.sourceService === 'spotify' && track.id?.startsWith('spotify:track:')

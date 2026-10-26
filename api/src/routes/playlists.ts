@@ -439,7 +439,10 @@ export async function playlistRoutes(fastify: FastifyInstance) {
       return reply.status(410).send({ error: 'This playlist link has expired.' });
     }
     const isReady = data.status === 'ready';
-    reply.header('Cache-Control', isReady ? 'public, max-age=60' : 'no-store');
+    // Playlist status, provider matches, and limit notices change while the
+    // client polls. Keep ready responses fresh too, so a cached response cannot
+    // hide a newly saved provider-specific notice or match count.
+    reply.header('Cache-Control', 'no-store');
     if (isReady && !servedFromCache) {
       await cacheReadyPlaylist(id, data, cacheVersion);
     } else if (data.status === 'processing') {
