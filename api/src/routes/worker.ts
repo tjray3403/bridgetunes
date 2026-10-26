@@ -202,8 +202,8 @@ export async function workerRoutes(fastify: FastifyInstance) {
     const changedRecords = new Map<string, TrackMatchRecord>();
     const providerFailures = new Map<string, { status?: number; retryAfter?: string }>();
     let providerLimitReached = false;
-    let providerLimitService: 'spotify' | 'youtube' | null = null;
-    let youtubeRateLimited = false;
+    let providerLimitService: 'spotify' | 'apple' | 'youtube' | null = null;
+    let providerRateLimited = false;
     const trackWrites = db.batch();
     const resolvedTracks = [] as Array<{
       position: number;
@@ -263,9 +263,10 @@ export async function workerRoutes(fastify: FastifyInstance) {
               const providerError = error as Error & { status?: number; retryAfter?: string };
               const status = providerError.status;
               request.log.error({ err: error, position, hasIsrc: Boolean(isrc) }, 'Spotify catalog matching failed for a saved track');
-              if (status === 403) {
+              if (status === 429 || status === 403) {
                 providerLimitReached = true;
                 providerLimitService = 'spotify';
+                providerRateLimited = status === 429;
                 availability.spotify = null;
                 availabilityStatus.spotify = 'temporarily_unavailable';
                 break;
@@ -281,7 +282,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
         }
       }
 
-      if (service === 'apple' && appleEnabledForRun && !alreadyResolved('apple')) {
+      if (service === 'apple' && appleEnabledForRun && !providerLimitReached && !alreadyResolved('apple')) {
         if (!(await isCurrentProcessingRun(playlistRef, runId))) {
           return reply.send({ success: true, stale: true });
         }
@@ -300,6 +301,14 @@ export async function workerRoutes(fastify: FastifyInstance) {
               const providerError = error as Error & { status?: number; retryAfter?: string };
               const status = providerError.status;
               request.log.error({ err: error, position, hasIsrc: Boolean(isrc) }, 'Apple Music catalog matching failed for a saved track');
+              if (status ===  429) {
+                providerLimitReached = true;
+                providerLimitService = 'apple';
+                providerRateLimited = true;
+                availability.apple = null;
+                availabilityStatus.apple = 'temporarily_unavailable';
+                break;
+              }
               const attempts = attemptsSoFar + 1;
               matchAttempts.apple = attempts;
               if (attempts >= MAX_PROVIDER_ATTEMPTS) {
@@ -330,7 +339,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
               if (status === 429 || status === 403) {
                 providerLimitReached = true;
                 providerLimitService = 'youtube';
-                youtubeRateLimited = status === 429;
+                providerRateLimited = status === 429;
                 availability.youtube = null;
                 availabilityStatus.youtube = 'temporarily_unavailable';
                 break;
@@ -441,9 +450,12 @@ export async function workerRoutes(fastify: FastifyInstance) {
         update['progress.completedChunks'] = updatedIndexes.length;
         update.status = 'ready';
         update.matchingService = null;
-        update.matchingNotice = youtubeRateLimited
-          ? "YouTube Music's rate limit has been reached for today. Existing matches are saved and available to transfer. Try YouTube Music matching again tomorrow."
-          : `${targetService === 'spotify' ? 'Spotify' : 'YouTube Music'} denied further matching because of its API rules or usage limits. Existing matches are saved and available to transfer.`;
+        const serviceName = targetService === 'spotify' ? 'Spotify' : targetService === 'apple' ? 'Apple Music' : 'YouTube Music';
+        update.matchingNotice = providerRateLimited && targetService === 'youtube'
+          ? "YouTube Music's daily limit of 100 searches has been reached. Existing matches are saved and available to transfer. Try YouTube Music matching again tomorrow."
+          : providerRateLimited
+            ? `${serviceName}'s rate limit has been reached. Existing matches are saved and available to transfer. Try matching again later.`
+          : `${serviceName} denied further matching because of its API rules or usage limits. Existing matches are saved and available to transfer.`;
       } else if (!providerFailures.size) {
         update.completedChunkIndexes = [...completedIndexes, chunkIndex];
         update['progress.completedChunks'] = completedChunks;
@@ -462,7 +474,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
       try {
         await cancelPlaylistRun(playlistId, runId);
       } catch (error) {
-        request.log.warn({ err: error, playlistId, runId }, 'Could not cancel remaining YouTube matching chunks after quota exhaustion');
+        request.log.warn({ err: error, playlistId, runId, service: providerLimitService }, 'Could not cancel remaining matching chunks after a provider limit was reached');
       }
     }
 
