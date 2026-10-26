@@ -1,5 +1,6 @@
 import { Redis } from '@upstash/redis';
 import type { Track } from '@bridgetunes/adapters';
+import { createHash } from 'node:crypto';
 
 const PLAYLIST_MEMORY_TTL_MS = 180_000;
 const TRACK_TTL_SECONDS = 24 * 60 * 60;
@@ -113,6 +114,30 @@ export function normalizeIsrc(value: string | undefined): string | undefined {
   return normalized && /^[A-Z0-9]{12}$/.test(normalized) ? normalized : undefined;
 }
 
+export function cacheIdForTrack(track: Track): string | undefined {
+  const isrc = normalizeIsrc(track.isrc);
+  if (isrc) return isrc;
+
+  const normalize = (value: string | undefined): string => (value || '')
+    .normalize('NFKC')
+    .trim()
+    .toLocaleLowerCase('en-US')
+    .replace(/\s+/g, ' ');
+  const title = normalize(track.title);
+  const artist = normalize(track.artist);
+  if (!title || !artist) return undefined;
+
+  const fingerprint = JSON.stringify({
+    title,
+    artist,
+    album: normalize(track.album),
+    durationSeconds: typeof track.durationMs === 'number' && Number.isFinite(track.durationMs)
+      ? Math.round(track.durationMs / 1000)
+      : null,
+  });
+  return `metadata-${createHash('sha256').update(fingerprint).digest('hex')}`;
+}
+
 export function getMemoryTrackMatches(isrc: string): TrackMatchRecord | undefined {
   const record = memoryTrackMatches.get(isrc);
   if (!record) return undefined;
@@ -162,7 +187,6 @@ export async function cacheTrackMatches(records: Map<string, TrackMatchRecord>):
   }
 }
 
-export function cacheKeyForTrack(track: Track, service: 'spotify' | 'apple', storefront = 'us'): string | undefined {
-  const isrc = normalizeIsrc(track.isrc);
-  return isrc ? `${service}:${storefront.toLowerCase()}` : undefined;
+export function cacheKeyForTrack(track: Track, service: 'spotify' | 'apple' | 'youtube', storefront = 'us'): string | undefined {
+  return cacheIdForTrack(track) ? `${service}:${storefront.toLowerCase()}` : undefined;
 }

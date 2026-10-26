@@ -5,10 +5,10 @@ import { Receiver } from '@upstash/qstash';
 import { db } from '../services/firebase.js';
 import { getSpotifyAppToken } from '../services/spotify.js';
 import { getMusicFeatureFlags } from '../services/features.js';
-import { publishQStashMessage } from '../services/qstash.js';
 import {
   cacheTrackMatches,
   cacheKeyForTrack,
+  cacheIdForTrack,
   getMemoryTrackMatches,
   getRedisTrackMatches,
   markChunkComplete,
@@ -91,12 +91,17 @@ export async function workerRoutes(fastify: FastifyInstance) {
       const chunkCount = Math.ceil(rawTracks.length / chunkSize);
       const runId = crypto.randomUUID();
 
-      // Update total chunks in Firestore
+      // A source read completes with its source IDs already available. Search
+      // other services only after the user asks to transfer to one.
       await db.collection('playlists').doc(playlistId).update({
         name: sourcePlaylistName || 'Your playlist',
-        completedChunkIndexes: [],
-        'progress.completedChunks': 0,
+        status: 'ready',
+        matchingService: null,
+        completedChunkIndexes: Array.from({ length: chunkCount }, (_, index) => index),
+        'progress.completedChunks': chunkCount,
         'progress.totalChunks': chunkCount,
+        'progress.completedTracks': rawTracks.length,
+        'progress.totalTracks': rawTracks.length,
         processingRunId: runId,
         tracks: rawTracks.map((t, idx) => ({
           ...t,
@@ -110,20 +115,6 @@ export async function workerRoutes(fastify: FastifyInstance) {
       if (chunkCount === 0) {
         await db.collection('playlists').doc(playlistId).update({ status: 'failed', error: 'No tracks were found in this playlist' });
         return reply.send({ success: false, error: 'No tracks found' });
-      }
-
-      // Enqueue chunk matching jobs to QStash
-      const qstashToken = process.env.QSTASH_TOKEN;
-      const workerBaseUrl = process.env.RENDER_EXTERNAL_URL;
-      if (!qstashToken || !workerBaseUrl) throw new Error('QStash publishing is not configured');
-
-      for (let i = 0; i < chunkCount; i++) {
-        await publishQStashMessage(
-          `${workerBaseUrl}/api/jobs/match-chunk`,
-          { playlistId, chunkIndex: i, runId },
-          `match-${playlistId}-${runId}-${i}`,
-          `match-${playlistId}-${runId}`,
-        );
       }
 
       return reply.send({ success: true, chunks: chunkCount });
@@ -173,32 +164,32 @@ export async function workerRoutes(fastify: FastifyInstance) {
     const appleToken = appleEnabledForRun ? process.env.APPLE_DEVELOPER_TOKEN || '' : '';
     const sourceIsSpotify = playlistData.sourceService === 'spotify';
 
-    const isrcs = [...new Set(tracks.map((track) => normalizeIsrc(track.isrc)).filter((isrc): isrc is string => Boolean(isrc)))];
+    const cacheIds = [...new Set(tracks.map(cacheIdForTrack).filter((cacheId): cacheId is string => Boolean(cacheId)))];
     const matchRecords = new Map<string, TrackMatchRecord>();
     const redisMisses: string[] = [];
-    for (const isrc of isrcs) {
-      const cached = getMemoryTrackMatches(isrc);
-      if (cached) matchRecords.set(isrc, cached);
-      else redisMisses.push(isrc);
+    for (const cacheId of cacheIds) {
+      const cached = getMemoryTrackMatches(cacheId);
+      if (cached) matchRecords.set(cacheId, cached);
+      else redisMisses.push(cacheId);
     }
     if (redisMisses.length) {
       const redisRecords = await getRedisTrackMatches(redisMisses);
-      for (const [isrc, record] of redisRecords) matchRecords.set(isrc, record);
+      for (const [cacheId, record] of redisRecords) matchRecords.set(cacheId, record);
     }
 
-    const firestoreMisses = isrcs.filter((isrc) => !matchRecords.has(isrc));
+    const firestoreMisses = cacheIds.filter((cacheId) => !matchRecords.has(cacheId));
     if (firestoreMisses.length) {
-      const snapshots = await db.getAll(...firestoreMisses.map((isrc) => db.collection('tracks').doc(isrc)));
+      const snapshots = await db.getAll(...firestoreMisses.map((cacheId) => db.collection('tracks').doc(cacheId)));
       const foundFromFirestore = new Map<string, TrackMatchRecord>();
       snapshots.forEach((snapshot, index) => {
         if (!snapshot.exists) return;
         const data = snapshot.data() as { matches?: Record<string, TrackMatch> } | undefined;
         if (data?.matches) {
           const record = { matches: data.matches };
-          const isrc = firestoreMisses[index];
-          matchRecords.set(isrc, record);
-          foundFromFirestore.set(isrc, record);
-          rememberTrackMatches(isrc, record);
+          const cacheId = firestoreMisses[index];
+          matchRecords.set(cacheId, record);
+          foundFromFirestore.set(cacheId, record);
+          rememberTrackMatches(cacheId, record);
         }
       });
       await cacheTrackMatches(foundFromFirestore);
@@ -222,7 +213,8 @@ export async function workerRoutes(fastify: FastifyInstance) {
       }
       const position = chunkIndex * 25 + offset;
       const isrc = normalizeIsrc(track.isrc);
-      const record = isrc ? (matchRecords.get(isrc) || { matches: {} }) : undefined;
+      const cacheId = cacheIdForTrack(track);
+      const record = cacheId ? (matchRecords.get(cacheId) || { matches: {} }) : undefined;
       const availability: Partial<{ spotify: string | null; apple: string | null; youtube: string | null }> = {};
       const availabilityStatus: Partial<{ spotify: 'pending' | 'temporarily_unavailable'; apple: 'pending' | 'temporarily_unavailable'; youtube: 'pending' | 'temporarily_unavailable' }> = {};
       const matchAttempts: Partial<{ spotify: number; apple: number; youtube: number }> = {};
@@ -230,14 +222,14 @@ export async function workerRoutes(fastify: FastifyInstance) {
         track.availability?.[service] !== undefined && track.availabilityStatus?.[service] !== 'pending';
       let recordChanged = false;
 
-      const findCached = (service: 'spotify' | 'apple'): TrackMatch | undefined => {
+      const findCached = (service: 'spotify' | 'apple' | 'youtube'): TrackMatch | undefined => {
         const cacheField = cacheKeyForTrack(track, service, 'us');
         return cacheField ? record?.matches[cacheField] : undefined;
       };
       const isReusable = (match: TrackMatch | undefined): boolean => Boolean(
         match && (match.id || (match.recheckAt && Date.parse(match.recheckAt) > Date.now())),
       );
-      const saveMatch = (service: 'spotify' | 'apple', id: string | null) => {
+      const saveMatch = (service: 'spotify' | 'apple' | 'youtube', id: string | null) => {
         const cacheField = cacheKeyForTrack(track, service, 'us');
         if (!record || !cacheField) return;
         record.matches[cacheField] = id
@@ -307,35 +299,43 @@ export async function workerRoutes(fastify: FastifyInstance) {
 
       if (service === 'youtube' && youtubeEnabledForRun && !alreadyResolved('youtube')) {
         if (!(await isCurrentProcessingRun(playlistRef, runId))) return reply.send({ success: true, stale: true });
-        try {
-          availability.youtube = playlistData.sourceService === 'youtube' && typeof track.id === 'string'
-            ? track.id
-            : await youtubeAdapter.searchTrack('', track, 'US');
-        } catch (error) {
-          const providerError = error as Error & { status?: number; retryAfter?: string };
-          const status = providerError.status;
-          request.log.error({ err: error, position, hasIsrc: Boolean(isrc) }, 'YouTube matching failed for a saved track');
-          const attempts = attemptsSoFar + 1;
-          matchAttempts.youtube = attempts;
-          if (attempts >= MAX_PROVIDER_ATTEMPTS) {
-            availability.youtube = null;
-            availabilityStatus.youtube = 'temporarily_unavailable';
-          } else providerFailures.set('youtube', { status, retryAfter: providerError.retryAfter });
+        if (playlistData.sourceService === 'youtube' && typeof track.id === 'string') {
+          availability.youtube = track.id;
+          saveMatch('youtube', track.id);
+        } else {
+          const cached = findCached('youtube');
+          if (isReusable(cached)) availability.youtube = cached!.id;
+          else {
+            try {
+              availability.youtube = await youtubeAdapter.searchTrack('', track, 'US');
+              saveMatch('youtube', availability.youtube);
+            } catch (error) {
+              const providerError = error as Error & { status?: number; retryAfter?: string };
+              const status = providerError.status;
+              request.log.error({ err: error, position, hasIsrc: Boolean(isrc) }, 'YouTube matching failed for a saved track');
+              const attempts = attemptsSoFar + 1;
+              matchAttempts.youtube = attempts;
+              if (attempts >= MAX_PROVIDER_ATTEMPTS) {
+                availability.youtube = null;
+                availabilityStatus.youtube = 'temporarily_unavailable';
+              } else providerFailures.set('youtube', { status, retryAfter: providerError.retryAfter });
+            }
+          }
         }
       }
       }
 
-      if (isrc && recordChanged && record) {
-        changedRecords.set(isrc, record);
-        matchRecords.set(isrc, record);
-        rememberTrackMatches(isrc, record);
+      if (cacheId && recordChanged && record) {
+        changedRecords.set(cacheId, record);
+        matchRecords.set(cacheId, record);
+        rememberTrackMatches(cacheId, record);
       }
       resolvedTracks.push({ position, availability, availabilityStatus, matchAttempts });
     }
 
-    // Durable per-ISRC matches allow future imports to bypass provider searches.
-    for (const [isrc, record] of changedRecords) {
-      trackWrites.set(db.collection('tracks').doc(isrc), { matches: record.matches }, { merge: true });
+    // Durable ISRC or metadata-fingerprint matches allow future imports to bypass provider searches.
+    for (const [cacheId, record] of changedRecords) {
+      trackWrites.set(db.collection('tracks').doc(cacheId), { matches: record.matches }, { merge: true });
     }
     if (changedRecords.size) await trackWrites.commit();
     await cacheTrackMatches(changedRecords);
@@ -391,10 +391,21 @@ export async function workerRoutes(fastify: FastifyInstance) {
       const completedChunks = completedIndexes.length + (providerFailures.size ? 0 : 1);
       const totalChunks = latest.progress?.totalChunks || 1;
       const update: Record<string, unknown> = { tracks: allTracks };
+      const progressServices = targetService
+        ? [targetService]
+        : providerOrder.filter((service) => service === 'spotify'
+          ? spotifyEnabledForRun
+          : service === 'apple' ? appleEnabledForRun : youtubeEnabledForRun);
+      const completedTracks = allTracks.filter((track: any) => progressServices.every((service) =>
+        track.availability?.[service] !== undefined && track.availabilityStatus?.[service] !== 'pending',
+      )).length;
+      update['progress.completedTracks'] = completedTracks;
+      update['progress.totalTracks'] = allTracks.length;
       if (!providerFailures.size) {
         update.completedChunkIndexes = [...completedIndexes, chunkIndex];
         update['progress.completedChunks'] = completedChunks;
         update.status = completedChunks >= totalChunks ? 'ready' : 'processing';
+        if (completedChunks >= totalChunks) update.matchingService = null;
       }
       transaction.update(playlistRef, update);
       return { completedChunks, duplicate: false, stale: false };

@@ -67,6 +67,22 @@ export async function getPlaylist(id: string) {
   return data;
 }
 
+export async function matchPlaylistForService(id: string, service: 'spotify' | 'apple' | 'youtube'): Promise<{ status: string }> {
+  const ownerKey = ownerKeyForPlaylistId(id);
+  if (!ownerKey) throw new Error('Only the browser that created this playlist can search for matches.');
+  try {
+    const { data } = await apiClient.post<{ status: string }>(`/api/playlists/${encodeURIComponent(id)}/match`, { service }, {
+      headers: { 'X-Playlist-Owner-Key': ownerKey },
+    });
+    return data;
+  } catch (cause) {
+    if (axios.isAxiosError<{ error?: string }>(cause) && cause.response?.data?.error) {
+      throw new Error(cause.response.data.error);
+    }
+    throw cause;
+  }
+}
+
 export async function rematchApplePlaylist(id: string, sourceUrl: string): Promise<void> {
   const ownerKey = ownerKeyForPlaylistId(id) || localStorage.getItem(`bridgetunes-owner-key:${sourceUrl.trim()}`);
   if (!ownerKey) throw new Error('Only the browser that created this playlist link can refresh its matches.');
