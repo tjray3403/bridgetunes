@@ -18,13 +18,17 @@ import {
   type TrackMatchRecord,
 } from '../services/cache.js';
 import { SpotifyAdapter, AppleMusicAdapter, YouTubeMusicAdapter } from '@bridgetunes/adapters';
+import { cancelPlaylistRun } from '../services/qstash.js';
 
 const MAX_PROVIDER_ATTEMPTS = 5;
 
 async function isCurrentProcessingRun(playlistRef: DocumentReference, runId: string): Promise<boolean> {
   const snapshot = await playlistRef.get();
   const playlist = snapshot.data();
-  return snapshot.exists && playlist?.processingRunId === runId && playlist?.status === 'processing';
+  return snapshot.exists
+    && playlist?.processingRunId === runId
+    && playlist?.status === 'processing'
+    && playlist?.providerLimitRunId !== runId;
 }
 
 const receiver = new Receiver({
@@ -197,6 +201,9 @@ export async function workerRoutes(fastify: FastifyInstance) {
 
     const changedRecords = new Map<string, TrackMatchRecord>();
     const providerFailures = new Map<string, { status?: number; retryAfter?: string }>();
+    let providerLimitReached = false;
+    let providerLimitService: 'spotify' | 'youtube' | null = null;
+    let youtubeRateLimited = false;
     const trackWrites = db.batch();
     const resolvedTracks = [] as Array<{
       position: number;
@@ -240,7 +247,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
 
       for (const service of providerOrder) {
       const attemptsSoFar = Number(track.matchAttempts?.[service] || 0);
-      if (service === 'spotify' && spotifyEnabledForRun && !alreadyResolved('spotify')) {
+      if (service === 'spotify' && spotifyEnabledForRun && !providerLimitReached && !alreadyResolved('spotify')) {
         if (sourceIsSpotify && typeof track.id === 'string' && track.id.startsWith('spotify:track:')) {
           availability.spotify = track.id;
           saveMatch('spotify', track.id);
@@ -256,6 +263,13 @@ export async function workerRoutes(fastify: FastifyInstance) {
               const providerError = error as Error & { status?: number; retryAfter?: string };
               const status = providerError.status;
               request.log.error({ err: error, position, hasIsrc: Boolean(isrc) }, 'Spotify catalog matching failed for a saved track');
+              if (status === 403) {
+                providerLimitReached = true;
+                providerLimitService = 'spotify';
+                availability.spotify = null;
+                availabilityStatus.spotify = 'temporarily_unavailable';
+                break;
+              }
               const attempts = attemptsSoFar + 1;
               matchAttempts.spotify = attempts;
               if (attempts >= MAX_PROVIDER_ATTEMPTS) {
@@ -297,7 +311,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
         }
       }
 
-      if (service === 'youtube' && youtubeEnabledForRun && !alreadyResolved('youtube')) {
+      if (service === 'youtube' && youtubeEnabledForRun && !providerLimitReached && !alreadyResolved('youtube')) {
         if (!(await isCurrentProcessingRun(playlistRef, runId))) return reply.send({ success: true, stale: true });
         if (playlistData.sourceService === 'youtube' && typeof track.id === 'string') {
           availability.youtube = track.id;
@@ -310,9 +324,17 @@ export async function workerRoutes(fastify: FastifyInstance) {
               availability.youtube = await youtubeAdapter.searchTrack('', track, 'US');
               saveMatch('youtube', availability.youtube);
             } catch (error) {
-              const providerError = error as Error & { status?: number; retryAfter?: string };
+              const providerError = error as Error & { status?: number; retryAfter?: string; reason?: string };
               const status = providerError.status;
               request.log.error({ err: error, position, hasIsrc: Boolean(isrc) }, 'YouTube matching failed for a saved track');
+              if (status === 429 || status === 403) {
+                providerLimitReached = true;
+                providerLimitService = 'youtube';
+                youtubeRateLimited = status === 429;
+                availability.youtube = null;
+                availabilityStatus.youtube = 'temporarily_unavailable';
+                break;
+              }
               const attempts = attemptsSoFar + 1;
               matchAttempts.youtube = attempts;
               if (attempts >= MAX_PROVIDER_ATTEMPTS) {
@@ -340,6 +362,10 @@ export async function workerRoutes(fastify: FastifyInstance) {
     if (changedRecords.size) await trackWrites.commit();
     await cacheTrackMatches(changedRecords);
 
+    if (providerLimitReached && providerLimitService) {
+      await playlistRef.update({ providerLimitRunId: runId });
+    }
+
     for (const [offset, track] of tracks.entries()) {
       const position = chunkIndex * 25 + offset;
       if (features.spotify && sourceIsSpotify && targetService === 'apple' && typeof track.id === 'string' && track.id.startsWith('spotify:track:')) {
@@ -358,6 +384,13 @@ export async function workerRoutes(fastify: FastifyInstance) {
         return { completedChunks: latest.progress?.completedChunks || 0, duplicate: true };
       }
       const allTracks = latest.tracks || [];
+      if (latest.providerLimitRunId === runId && providerLimitService && providerLimitService === targetService) {
+        for (const track of allTracks) {
+          if (!track.availability?.[targetService]) {
+            track.availabilityStatus = { ...(track.availabilityStatus || {}), [targetService]: 'temporarily_unavailable' };
+          }
+        }
+      }
       for (const resolved of resolvedTracks) {
         if (allTracks[resolved.position]) {
           const availability = { ...(allTracks[resolved.position].availability || {}) };
@@ -401,7 +434,17 @@ export async function workerRoutes(fastify: FastifyInstance) {
       )).length;
       update['progress.completedTracks'] = completedTracks;
       update['progress.totalTracks'] = allTracks.length;
-      if (!providerFailures.size) {
+      if (providerLimitReached && providerLimitService === targetService) {
+        const completedIndexes: number[] = latest.completedChunkIndexes || [];
+        const updatedIndexes = [...new Set([...completedIndexes, chunkIndex])];
+        update.completedChunkIndexes = updatedIndexes;
+        update['progress.completedChunks'] = updatedIndexes.length;
+        update.status = 'ready';
+        update.matchingService = null;
+        update.matchingNotice = youtubeRateLimited
+          ? "YouTube Music's rate limit has been reached for today. Existing matches are saved and available to transfer. Try YouTube Music matching again tomorrow."
+          : `${targetService === 'spotify' ? 'Spotify' : 'YouTube Music'} denied further matching because of its API rules or usage limits. Existing matches are saved and available to transfer.`;
+      } else if (!providerFailures.size) {
         update.completedChunkIndexes = [...completedIndexes, chunkIndex];
         update['progress.completedChunks'] = completedChunks;
         update.status = completedChunks >= totalChunks ? 'ready' : 'processing';
@@ -411,11 +454,19 @@ export async function workerRoutes(fastify: FastifyInstance) {
       return { completedChunks, duplicate: false, stale: false };
     });
 
-    if (!result.stale && !providerFailures.size) {
+    if (!result.stale && (!providerFailures.size || (providerLimitReached && providerLimitService === targetService))) {
       await markChunkComplete(playlistId, chunkIndex);
     }
 
-    if (providerFailures.size && !result.stale && !result.duplicate) {
+    if (providerLimitReached && providerLimitService === targetService && !result.stale) {
+      try {
+        await cancelPlaylistRun(playlistId, runId);
+      } catch (error) {
+        request.log.warn({ err: error, playlistId, runId }, 'Could not cancel remaining YouTube matching chunks after quota exhaustion');
+      }
+    }
+
+    if (providerFailures.size && !providerLimitReached && !result.stale && !result.duplicate) {
       const retryAfter = [...providerFailures.values()].find((failure) => failure.retryAfter)?.retryAfter || '30';
       reply.header('Retry-After', retryAfter);
       return reply.status(503).send({

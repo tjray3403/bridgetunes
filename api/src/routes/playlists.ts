@@ -88,6 +88,8 @@ async function queueServiceMatching(playlistId: string, tracks: Track[], service
   await playlistRef.update({
     status: 'processing',
     error: null,
+    matchingNotice: null,
+    youtubeQuotaExceededRunId: null,
     processingRunId: runId,
     matchingService: service,
     completedChunkIndexes: [],

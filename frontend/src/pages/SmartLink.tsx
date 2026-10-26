@@ -21,6 +21,7 @@ type PlaylistData = {
   status?: string;
   sourceService?: string;
   matchingService?: string | null;
+  matchingNotice?: string | null;
   sourceUrl?: string;
   tracks?: PlaylistTrack[];
   progress?: { completedChunks?: number; totalChunks?: number; completedTracks?: number; totalTracks?: number };
@@ -415,6 +416,7 @@ export function SmartLink() {
                 ? <p className="share-action-message" role="status">No Spotify track matches are available for this link yet.</p>
               : null}
             {shareMessage && <p className="share-action-message" role="status">{shareMessage}</p>}
+            {playlist.matchingNotice && <p className="share-action-message" role="status">{playlist.matchingNotice}</p>}
           </div>
         </div>
 

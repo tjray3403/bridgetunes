@@ -27,9 +27,12 @@ export class YouTubeMusicAdapter implements MusicAdapter {
     const query = new URLSearchParams({ ...params, key: this.key() });
     const response = await fetch(`${apiBase}/${path}?${query}`);
     if (!response.ok) {
-      const error = new Error(`YouTube API request failed (${response.status})`) as Error & { status: number; retryAfter?: string };
+      const details = await response.clone().json().catch(() => null) as { error?: { errors?: Array<{ reason?: string }> } } | null;
+      const reason = details?.error?.errors?.map((entry) => entry.reason).find(Boolean);
+      const error = new Error(`YouTube API request failed (${response.status})${reason ? `: ${reason}` : ''}`) as Error & { status: number; retryAfter?: string; reason?: string };
       error.status = response.status;
       error.retryAfter = response.headers.get('retry-after') || undefined;
+      error.reason = reason;
       throw error;
     }
     return response.json() as Promise<T>;
@@ -43,9 +46,12 @@ export class YouTubeMusicAdapter implements MusicAdapter {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     if (!response.ok) {
-      const error = new Error(`YouTube API request failed (${response.status})`) as Error & { status: number; retryAfter?: string };
+      const details = await response.clone().json().catch(() => null) as { error?: { errors?: Array<{ reason?: string }> } } | null;
+      const reason = details?.error?.errors?.map((entry) => entry.reason).find(Boolean);
+      const error = new Error(`YouTube API request failed (${response.status})${reason ? `: ${reason}` : ''}`) as Error & { status: number; retryAfter?: string; reason?: string };
       error.status = response.status;
       error.retryAfter = response.headers.get('retry-after') || undefined;
+      error.reason = reason;
       throw error;
     }
     return response.json() as Promise<T>;
