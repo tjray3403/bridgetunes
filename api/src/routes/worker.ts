@@ -450,6 +450,8 @@ export async function workerRoutes(fastify: FastifyInstance) {
         update.status = 'ready';
         update.matchingService = null;
         const serviceName = targetService === 'spotify' ? 'Spotify' : targetService === 'apple' ? 'Apple Music' : 'YouTube Music';
+        update.matchingNoticeService = targetService;
+        update.matchingNoticeProgress = { completedChunks: completedIndexes.length, totalChunks };
         update.matchingNotice = providerRateLimited
           ? `Matched ${allTracks.filter((track: any) => Boolean(track.availability?.[targetService])).length} ${serviceName} tracks. Unable to match more tracks as you've reached the limit for today.`
           : `${serviceName} denied further matching because of its API rules or usage limits, try again later. Existing matches are saved and available to transfer.`;

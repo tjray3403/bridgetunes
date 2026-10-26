@@ -77,7 +77,7 @@ export async function matchPlaylistForService(id: string, service: 'spotify' | '
     return data;
   } catch (cause) {
     if (axios.isAxiosError<{ error?: string }>(cause) && cause.response?.data?.error) {
-      throw new Error(cause.response.data.error);
+      throw new Error(cause.response.data.error, { cause });
     }
     throw cause;
   }
@@ -92,7 +92,7 @@ export async function rematchApplePlaylist(id: string, sourceUrl: string): Promi
     });
   } catch (cause) {
     if (axios.isAxiosError<{ error?: string }>(cause) && cause.response?.data?.error) {
-      throw new Error(cause.response.data.error);
+      throw new Error(cause.response.data.error, { cause });
     }
     throw cause;
   }

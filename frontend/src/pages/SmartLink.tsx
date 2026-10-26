@@ -22,6 +22,8 @@ type PlaylistData = {
   sourceService?: string;
   matchingService?: string | null;
   matchingNotice?: string | null;
+  matchingNoticeService?: string | null;
+  matchingNoticeProgress?: { completedChunks?: number; totalChunks?: number };
   sourceUrl?: string;
   tracks?: PlaylistTrack[];
   progress?: { completedChunks?: number; totalChunks?: number; completedTracks?: number; totalTracks?: number };
@@ -30,6 +32,10 @@ type PlaylistData = {
 
 export function SmartLink() {
   const { id } = useParams<{ id: string }>();
+  return <SmartLinkPage key={id} id={id} />;
+}
+
+function SmartLinkPage({ id }: { id?: string }) {
   const [playlist, setPlaylist] = useState<PlaylistData | null>(null);
   const [error, setError] = useState('');
   const [shareMessage, setShareMessage] = useState('');
@@ -54,34 +60,18 @@ export function SmartLink() {
   const visitTrackedFor = useRef<string | null>(null);
 
   useEffect(() => {
-    setPlaylist(null);
-    setError('');
-    setShareMessage('');
-    setSelectedProvider('spotify');
-    setSpotifyPlaylistUrl('');
-    setSpotifyCreatedTrackCount(0);
-    setApplePlaylistUrl('');
-    setAppleCreatedTrackCount(0);
-    setYoutubePlaylistUrl('');
-    setYoutubeCreatedTrackCount(0);
-    setSpotifyProgress(null);
-    setAppleProgress(null);
-    setMatchingService(null);
-  }, [id]);
-
-  useEffect(() => {
     if (!id || visitTrackedFor.current === id) return;
     visitTrackedFor.current = id;
     void trackPlaylistVisit(id).catch(() => undefined);
   }, [id]);
 
   useEffect(() => {
-    if (playlist?.status !== 'processing') setMatchingService(null);
-  }, [playlist?.status]);
-
-  useEffect(() => {
     void getMusicFeatureFlags().then((nextFeatures) => {
       setFeatures(nextFeatures);
+      if (!nextFeatures.appleMusic) {
+        setAppleSetupReady(false);
+        setAppleSetupError('');
+      }
       if (!nextFeatures.spotify && nextFeatures.appleMusic) setSelectedProvider('apple');
       else if (!nextFeatures.spotify && !nextFeatures.appleMusic && nextFeatures.youtubeMusic) setSelectedProvider('youtube');
     });
@@ -89,11 +79,7 @@ export function SmartLink() {
 
   useEffect(() => {
     let active = true;
-    if (!features.appleMusic) {
-      setAppleSetupReady(false);
-      setAppleSetupError('');
-      return () => { active = false; };
-    }
+    if (!features.appleMusic) return () => { active = false; };
     void prepareAppleMusic().then(() => {
       if (active) setAppleSetupReady(true);
     }).catch((cause: unknown) => {
@@ -112,25 +98,22 @@ export function SmartLink() {
     if (!id) return;
 
     let isMounted = true;
-    let interval: number | undefined;
     const fetchDetails = async () => {
       try {
         const data = await getPlaylist(id) as PlaylistData;
         if (!isMounted) return;
         setPlaylist(data);
-        if ((data.status === 'ready' || data.status === 'failed') && interval !== undefined) {
-          window.clearInterval(interval);
-        }
+        if (data.status !== 'processing') setMatchingService(null);
       } catch {
         if (isMounted) setError('Could not load this playlist link. It may have expired or the API may be unavailable.');
       }
     };
 
+    const interval = window.setInterval(() => void fetchDetails(), 3000);
     void fetchDetails();
-    interval = window.setInterval(() => void fetchDetails(), 3000);
     return () => {
       isMounted = false;
-      if (interval !== undefined) window.clearInterval(interval);
+      window.clearInterval(interval);
     };
   }, [id]);
 
@@ -169,7 +152,13 @@ export function SmartLink() {
   const progressPercent = totalTracks ? Math.min(100, Math.round((completedTracks / totalTracks) * 100)) : 0;
   const isProcessing = playlist.status === 'processing';
   const isReady = playlist.status === 'ready';
-  const isMatchingStopped = Boolean(playlist.matchingNotice);
+  const noticeService = playlist.matchingNoticeService || (
+    playlist.matchingNotice?.includes('YouTube') ? 'youtube'
+      : playlist.matchingNotice?.includes('Spotify') ? 'spotify'
+        : playlist.matchingNotice?.includes('Apple Music') ? 'apple' : undefined
+  );
+  const hasMatchingNotice = Boolean(playlist.matchingNotice && (!noticeService || noticeService === selectedProvider));
+  const selectedProviderStopped = hasMatchingNotice && !isProcessing;
   const spotifyTrackUris = tracks
     .map((track) => playlist.sourceService === 'spotify' && track.id?.startsWith('spotify:track:')
       ? track.id
@@ -424,9 +413,9 @@ export function SmartLink() {
         <section className="availability-panel" aria-label="Playlist progress and availability">
           <div className="availability-panel-heading">
             <div><span className="card-kicker">LISTENING OPTIONS</span><h2>Find your next listen</h2></div>
-            <span className={`status-chip ${isMatchingStopped || playlist.status === 'failed' ? 'status-failed' : isReady ? 'status-ready' : 'status-working'}`}>
-              {isMatchingStopped || playlist.status === 'failed' ? <AlertCircle size={14} /> : isReady ? <CheckCircle2 size={14} /> : <Loader2 className="spin" size={14} />}
-              {isMatchingStopped ? 'Stopped' : isReady ? 'Ready' : playlist.status === 'failed' ? 'Import failed' : 'In progress'}
+            <span className={`status-chip ${selectedProviderStopped || playlist.status === 'failed' ? 'status-failed' : isReady ? 'status-ready' : 'status-working'}`}>
+              {selectedProviderStopped || playlist.status === 'failed' ? <AlertCircle size={14} /> : isReady ? <CheckCircle2 size={14} /> : <Loader2 className="spin" size={14} />}
+              {selectedProviderStopped ? 'Stopped' : isReady ? 'Ready' : playlist.status === 'failed' ? 'Import failed' : 'In progress'}
             </span>
           </div>
           <div className="provider-legend">
@@ -436,9 +425,9 @@ export function SmartLink() {
             {isProcessing && <span className="match-progress-text">{progressMatchedCount} / {totalTracks} songs matched on {serviceName(progressDestination)}</span>}
           </div>
           {isProcessing && <div className="progress-track" role="progressbar" aria-label={`${completedTracks} of ${totalTracks} tracks checked`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progressPercent}><span style={{ width: `${progressPercent}%` }} /></div>}
-          {isMatchingStopped && <>
+          {hasMatchingNotice && <>
             <p className="share-action-message" role="status">{playlist.matchingNotice}</p>
-            <p className="match-progress-text">{completedChunks} / {totalChunks} chunks completed.</p>
+            <p className="match-progress-text">{playlist.matchingNoticeService ? `${serviceName(playlist.matchingNoticeService)}: ` : ''}{playlist.matchingNoticeProgress?.completedChunks ?? completedChunks} / {playlist.matchingNoticeProgress?.totalChunks ?? totalChunks} chunks completed.</p>
           </>}
           {playlist.status === 'failed' && <p role="alert" className="notice notice-error share-error">{playlist.error || 'Playlist processing failed. Please try the link again.'}</p>}
         </section>

@@ -29,6 +29,17 @@ function defaultPlaylistName(service: MusicService, trackCount: number): string 
   return `${service}-playlist-${randomLetters}${String(trackCount).padStart(4, '0')}`;
 }
 
+function matchingNoticeService(playlist: Record<string, any> | undefined): MusicService | undefined {
+  if (playlist?.matchingNoticeService === 'spotify' || playlist?.matchingNoticeService === 'apple' || playlist?.matchingNoticeService === 'youtube') {
+    return playlist.matchingNoticeService;
+  }
+  const notice = typeof playlist?.matchingNotice === 'string' ? playlist.matchingNotice : '';
+  if (notice.includes('YouTube')) return 'youtube';
+  if (notice.includes('Spotify')) return 'spotify';
+  if (notice.includes('Apple Music')) return 'apple';
+  return undefined;
+}
+
 function sourceAvailability(track: Track, sourceService: MusicService): Partial<Record<MusicService, string>> {
   if (typeof track.id !== 'string' || !track.id) return {};
   if (sourceService === 'spotify' && !track.id.startsWith('spotify:track:')) return {};
@@ -72,6 +83,8 @@ async function queueServiceMatching(playlistId: string, tracks: Track[], service
 
   const runId = crypto.randomUUID();
   const playlistRef = db.collection('playlists').doc(playlistId);
+  const currentPlaylist = (await playlistRef.get()).data();
+  const clearMatchingNotice = matchingNoticeService(currentPlaylist) === service;
   await Promise.all([invalidatePlaylistCache(playlistId), resetPlaylistProgress(playlistId)]);
   const chunks: Track[][] = [];
   for (let i = 0; i < tracks.length; i += chunkSize) chunks.push(tracks.slice(i, i + chunkSize));
@@ -94,7 +107,7 @@ async function queueServiceMatching(playlistId: string, tracks: Track[], service
   await playlistRef.update({
     status: 'processing',
     error: null,
-    matchingNotice: null,
+    ...(clearMatchingNotice ? { matchingNotice: null, matchingNoticeService: null, matchingNoticeProgress: null } : {}),
     youtubeQuotaExceededRunId: null,
     processingRunId: runId,
     matchingService: service,
@@ -113,6 +126,18 @@ async function queueServiceMatching(playlistId: string, tracks: Track[], service
       `match-${playlistId}-${runId}-${i}`,
       `match-${playlistId}-${runId}`,
     );
+  }
+
+  // A fast provider-limit response may arrive while this loop is still
+  // publishing. Re-cancel after the final publish so late messages are removed;
+  // the worker-side run marker also makes any already-delivered message exit.
+  const latestPlaylist = (await playlistRef.get()).data();
+  if (latestPlaylist?.providerLimitRunId === runId) {
+    try {
+      await cancelPlaylistRun(playlistId, runId);
+    } catch (error) {
+      console.warn('Could not cancel late messages for a provider-limited matching run.', error);
+    }
   }
 }
 
