@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowDown, ArrowRight, Check, Loader2, Music2, Sparkles } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, Check, CheckCircle2, ChevronDown, Clipboard, Loader2, Music2, RotateCw, Sparkles } from 'lucide-react';
 import { getMusicFeatureFlags, submitPlaylist } from '../services/api';
 import { currentSpotifyAccessToken, spotifyAuthorizationUrl } from '../services/spotifyAuth';
 
@@ -175,14 +175,22 @@ export function Home() {
             <div className="device-button device-button-left" />
             <div className="device-screen">
               <div className="device-status"><span>9:41</span><span className="status-icons"><i /><i /><i /></span></div>
-              <div className="device-brand"><span className="mini-mark">bt</span><span>YOUR PLAYLIST</span></div>
-              <div className="cover-art"><span className="cover-orb cover-orb-one" /><span className="cover-orb cover-orb-two" /><span className="cover-title">after<br />hours</span><span className="cover-subtitle">a little softer, a little slower</span></div>
-              <div className="preview-info"><div><h3>Late Night Drive</h3><p>Shared by you · 42 tracks</p></div><span className="preview-play"><ArrowRight size={15} /></span></div>
-              <div className="availability-row"><span className="availability-label">AVAILABLE ON</span><span className="tiny-service tiny-spotify">S</span><span className="tiny-service tiny-apple">A</span><span className="availability-count">2 services</span></div>
-              <div className="preview-track"><span className="track-index">01</span><span className="track-copy"><b>Nightcall</b><small>Kavinsky</small></span><span className="track-duration">4:18</span></div>
-              <div className="preview-track"><span className="track-index">02</span><span className="track-copy"><b>Instant Crush</b><small>Daft Punk, Julian Casablancas</small></span><span className="track-duration">5:37</span></div>
-              <div className="preview-track"><span className="track-index">03</span><span className="track-copy"><b>Sundara</b><small>ME3</small></span><span className="track-duration">3:42</span></div>
-              <div className="phone-footer"><span /> A link that sounds like you</div>
+              <div className="phone-browser"><span className="browser-menu">☰</span><span>bridgetunes-fccff.web.app</span><RotateCw size={11} /></div>
+              <div className="phone-site-nav"><span className="phone-brand-mark"><Music2 size={13} /></span><b>bridge<span>tunes</span></b><small><ArrowLeft size={10} /> Make a link</small></div>
+              <div className="phone-cover"><span className="cover-orb cover-orb-one" /><span className="cover-orb cover-orb-two" /><Music2 size={28} /></div>
+              <div className="phone-link-content">
+                <div className="phone-eyebrow"><Sparkles size={10} /> YOUR SMART LINK</div>
+                <div className="phone-source"><i /> APPLE MUSIC PLAYLIST</div>
+                <h3>Late Night Drive</h3>
+                <p className="phone-subtitle">A little more listening, wherever your people are.</p>
+                <div className="phone-stats">42 tracks <span>•</span> Ready to share</div>
+                <div className="phone-actions"><span><Clipboard size={12} /> Copy link</span><b>Spotify <ChevronDown size={12} /></b></div>
+                <div className="phone-create"><Music2 size={13} /> Create in Spotify (42)</div>
+                <div className="phone-options"><div><small>LISTENING OPTIONS</small><CheckCircle2 size={13} /> <span>Ready</span></div><b>Find your next listen</b><p><i className="tiny-spotify" /> Spotify <i className="tiny-apple" /> Apple Music <i className="tiny-youtube" /> YouTube</p></div>
+                <div className="phone-track-heading">TRACK AVAILABILITY <span>42 songs</span></div>
+                <div className="preview-track"><span className="track-index">01</span><span className="track-copy"><b>Nightcall</b><small>Kavinsky</small></span><span className="phone-match"><CheckCircle2 size={11} /></span></div>
+                <div className="preview-track"><span className="track-index">02</span><span className="track-copy"><b>Instant Crush</b><small>Daft Punk, Julian Casablancas</small></span><span className="phone-match"><CheckCircle2 size={11} /></span></div>
+              </div>
             </div>
           </div>
           <div className="visual-note"><span className="note-star">✳</span><span>One easy link.<br /><b>More ways to listen.</b></span></div>
