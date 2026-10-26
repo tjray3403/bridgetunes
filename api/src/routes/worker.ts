@@ -139,6 +139,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
 
     const playlistData = doc.data()!;
     if (!runId || playlistData.processingRunId !== runId) return reply.send({ success: true, stale: true });
+    if (playlistData.providerLimitRunId === runId) return reply.send({ success: true, stopped: true });
     const completedChunkIndexes: number[] = playlistData.completedChunkIndexes || [];
     if (completedChunkIndexes.includes(chunkIndex)) return reply.send({ success: true, duplicate: true });
 
@@ -215,7 +216,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
     const providerOrder = (['spotify', 'apple', 'youtube'] as const)
       .filter((service) => !targetService || service === targetService)
       .sort((left, right) => (left === playlistData.sourceService ? -1 : right === playlistData.sourceService ? 1 : 0));
-    for (const [offset, track] of tracks.entries()) {
+    trackLoop: for (const [offset, track] of tracks.entries()) {
       if (!(await isCurrentProcessingRun(playlistRef, runId))) {
         return reply.send({ success: true, stale: true });
       }
@@ -270,7 +271,8 @@ export async function workerRoutes(fastify: FastifyInstance) {
                 providerRateLimited = status === 429;
                 availability.spotify = null;
                 availabilityStatus.spotify = 'temporarily_unavailable';
-                break;
+                await playlistRef.update({ providerLimitRunId: runId });
+                break trackLoop;
               }
               const attempts = attemptsSoFar + 1;
               matchAttempts.spotify = attempts;
@@ -302,13 +304,14 @@ export async function workerRoutes(fastify: FastifyInstance) {
               const providerError = error as Error & { status?: number; retryAfter?: string };
               const status = providerError.status;
               request.log.error({ err: error, position, hasIsrc: Boolean(isrc) }, 'Apple Music catalog matching failed for a saved track');
-              if (status ===  429) {
+              if (status === 429) {
                 providerLimitReached = true;
                 providerLimitService = 'apple';
                 providerRateLimited = true;
                 availability.apple = null;
                 availabilityStatus.apple = 'temporarily_unavailable';
-                break;
+                await playlistRef.update({ providerLimitRunId: runId });
+                break trackLoop;
               }
               const attempts = attemptsSoFar + 1;
               matchAttempts.apple = attempts;
@@ -343,7 +346,8 @@ export async function workerRoutes(fastify: FastifyInstance) {
                 providerRateLimited = status === 429;
                 availability.youtube = null;
                 availabilityStatus.youtube = 'temporarily_unavailable';
-                break;
+                await playlistRef.update({ providerLimitRunId: runId });
+                break trackLoop;
               }
               const attempts = attemptsSoFar + 1;
               matchAttempts.youtube = attempts;
@@ -371,10 +375,6 @@ export async function workerRoutes(fastify: FastifyInstance) {
     }
     if (changedRecords.size) await trackWrites.commit();
     await cacheTrackMatches(changedRecords);
-
-    if (providerLimitReached && providerLimitService) {
-      await playlistRef.update({ providerLimitRunId: runId });
-    }
 
     for (const [offset, track] of tracks.entries()) {
       const position = chunkIndex * 25 + offset;
@@ -445,18 +445,14 @@ export async function workerRoutes(fastify: FastifyInstance) {
       update['progress.completedTracks'] = completedTracks;
       update['progress.totalTracks'] = allTracks.length;
       if (providerLimitReached && providerLimitService === targetService) {
-        const completedIndexes: number[] = latest.completedChunkIndexes || [];
-        const updatedIndexes = [...new Set([...completedIndexes, chunkIndex])];
-        update.completedChunkIndexes = updatedIndexes;
-        update['progress.completedChunks'] = updatedIndexes.length;
+        update.completedChunkIndexes = completedIndexes;
+        update['progress.completedChunks'] = completedIndexes.length;
         update.status = 'ready';
         update.matchingService = null;
         const serviceName = targetService === 'spotify' ? 'Spotify' : targetService === 'apple' ? 'Apple Music' : 'YouTube Music';
-        update.matchingNotice = providerRateLimited && targetService === 'youtube'
-          ? "YouTube Music's daily limit of 100 searches has been reached. Existing matches are saved and available to transfer. Try YouTube Music matching again tomorrow."
-          : providerRateLimited
-            ? `${serviceName}'s rate limit has been reached. Existing matches are saved and available to transfer. Try matching again later.`
-          : `${serviceName} denied further matching because of its API rules or usage limits. Existing matches are saved and available to transfer.`;
+        update.matchingNotice = providerRateLimited
+          ? `Matched ${allTracks.filter((track: any) => Boolean(track.availability?.[targetService])).length} ${serviceName} tracks. Unable to match more tracks as you've reached the limit for today.`
+          : `${serviceName} denied further matching because of its API rules or usage limits, try again later. Existing matches are saved and available to transfer.`;
       } else if (!providerFailures.size) {
         update.completedChunkIndexes = [...completedIndexes, chunkIndex];
         update['progress.completedChunks'] = completedChunks;
@@ -467,7 +463,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
       return { completedChunks, duplicate: false, stale: false };
     });
 
-    if (!result.stale && (!providerFailures.size || (providerLimitReached && providerLimitService === targetService))) {
+    if (!result.stale && !providerLimitReached && !providerFailures.size) {
       await markChunkComplete(playlistId, chunkIndex);
     }
 

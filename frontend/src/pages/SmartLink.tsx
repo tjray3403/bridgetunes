@@ -163,11 +163,13 @@ export function SmartLink() {
 
   const tracks = playlist.tracks || [];
   const completedChunks = playlist.progress?.completedChunks || 0;
+  const totalChunks = playlist.progress?.totalChunks || 0;
   const totalTracks = playlist.progress?.totalTracks || tracks.length;
   const completedTracks = Math.min(totalTracks, playlist.progress?.completedTracks ?? Math.min(totalTracks, completedChunks * 25));
   const progressPercent = totalTracks ? Math.min(100, Math.round((completedTracks / totalTracks) * 100)) : 0;
   const isProcessing = playlist.status === 'processing';
   const isReady = playlist.status === 'ready';
+  const isMatchingStopped = Boolean(playlist.matchingNotice);
   const spotifyTrackUris = tracks
     .map((track) => playlist.sourceService === 'spotify' && track.id?.startsWith('spotify:track:')
       ? track.id
@@ -416,16 +418,15 @@ export function SmartLink() {
                 ? <p className="share-action-message" role="status">No Spotify track matches are available for this link yet.</p>
               : null}
             {shareMessage && <p className="share-action-message" role="status">{shareMessage}</p>}
-            {playlist.matchingNotice && <p className="share-action-message" role="status">{playlist.matchingNotice}</p>}
           </div>
         </div>
 
         <section className="availability-panel" aria-label="Playlist progress and availability">
           <div className="availability-panel-heading">
             <div><span className="card-kicker">LISTENING OPTIONS</span><h2>Find your next listen</h2></div>
-            <span className={`status-chip ${isReady ? 'status-ready' : playlist.status === 'failed' ? 'status-failed' : 'status-working'}`}>
-              {isReady ? <CheckCircle2 size={14} /> : playlist.status === 'failed' ? <AlertCircle size={14} /> : <Loader2 className="spin" size={14} />}
-              {isReady ? 'Ready' : playlist.status === 'failed' ? 'Import failed' : 'In progress'}
+            <span className={`status-chip ${isMatchingStopped || playlist.status === 'failed' ? 'status-failed' : isReady ? 'status-ready' : 'status-working'}`}>
+              {isMatchingStopped || playlist.status === 'failed' ? <AlertCircle size={14} /> : isReady ? <CheckCircle2 size={14} /> : <Loader2 className="spin" size={14} />}
+              {isMatchingStopped ? 'Stopped' : isReady ? 'Ready' : playlist.status === 'failed' ? 'Import failed' : 'In progress'}
             </span>
           </div>
           <div className="provider-legend">
@@ -435,6 +436,10 @@ export function SmartLink() {
             {isProcessing && <span className="match-progress-text">{progressMatchedCount} / {totalTracks} songs matched on {serviceName(progressDestination)}</span>}
           </div>
           {isProcessing && <div className="progress-track" role="progressbar" aria-label={`${completedTracks} of ${totalTracks} tracks checked`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progressPercent}><span style={{ width: `${progressPercent}%` }} /></div>}
+          {isMatchingStopped && <>
+            <p className="share-action-message" role="status">{playlist.matchingNotice}</p>
+            <p className="match-progress-text">{completedChunks} / {totalChunks} chunks completed.</p>
+          </>}
           {playlist.status === 'failed' && <p role="alert" className="notice notice-error share-error">{playlist.error || 'Playlist processing failed. Please try the link again.'}</p>}
         </section>
 
