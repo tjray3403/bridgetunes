@@ -139,10 +139,10 @@ a { color: inherit; text-decoration: none; }
 .phone-subtitle { margin: 0; color: #a49e96; font-size: 8px; line-height: 1.45; }
 .phone-stats { display: flex; align-items: center; gap: 7px; margin-top: 9px; color: #bcb5ab; font-size: 8px; }
 .phone-stats span { color: #736d65; }
-.phone-actions { display: grid; grid-template-columns: 1fr 1.25fr; gap: 7px; margin-top: 11px; }
+.phone-actions { width: 66%; display: grid; grid-template-columns: 1fr 1.25fr; gap: 7px; margin-top: 11px; }
 .phone-actions > span, .phone-actions > b { min-width: 0; height: 31px; display: flex; align-items: center; justify-content: center; gap: 5px; border: 1px solid rgba(255,255,255,.13); border-radius: 8px; color: #e7e1d8; font-size: 8px; font-weight: 600; }
 .phone-actions > b { justify-content: space-between; padding: 0 9px; }
-.phone-create { height: 33px; display: flex; align-items: center; gap: 7px; margin-top: 7px; padding: 0 10px; border-radius: 8px; background: var(--gold); color: #20180c; font-size: 8px; font-weight: 700; }
+.phone-create { width: 50%; height: 33px; display: flex; align-items: center; gap: 7px; margin-top: 7px; padding: 0 10px; border-radius: 8px; background: var(--gold); color: #20180c; font-size: 8px; font-weight: 700; }
 .phone-options { margin-top: 11px; padding: 9px; border: 1px solid rgba(255,255,255,.1); border-radius: 9px; background: rgba(28,27,25,.82); }
 .phone-options > div { display: flex; align-items: center; gap: 4px; color: #77d9aa; font-size: 7px; }
 .phone-options > div small { margin-right: auto; color: var(--gold); font-family: 'DM Mono', monospace; font-size: 6px; letter-spacing: .12em; }
