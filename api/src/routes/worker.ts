@@ -63,7 +63,7 @@ export async function workerRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // Worker 1: Fetch source playlist tracks & split into chunks
+  // Fetch source playlist tracks & split into chunks
   fastify.post('/api/jobs/fetch', async (request: FastifyRequest<{ Body: { playlistId: string; cleanUrl: string; service: string } }>, reply) => {
     const { playlistId, cleanUrl, service } = request.body;
 
